@@ -36,6 +36,12 @@
  *     Specifies the number of log lines between flushes to the log file.
  *     Must be a positive integer; defaults to 256 if unset or invalid.
  *
+ * - SCOPE_TIMER_FORMAT:
+ *     Controls the units used for displaying elapsed time. Accepted values:
+ *     "SECONDS", "MILLIS", "MICROS", or "NANOS" (case-insensitive). If unset or invalid,
+ *     the timer uses an automatic format (seconds with ms decimals, else ms with
+ *     us decimals, else microseconds).
+ * 
  * Usage Example 1:
  * ---------------
  * #include "ScopeTimer.hpp"
@@ -63,7 +69,8 @@
 #pragma once
 
 #include <atomic>
-#include <cctype>
+#include <algorithm>  // for std::transform
+#include <cctype>     // for std::toupper
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -80,10 +87,41 @@
 #endif
 
 // Always open the namespaces unconditionally, so they are present in all builds.
-namespace ewm {
-namespace ewm_scopetimer {
+namespace ewm::scopetimer {
+
+    class ScopeTimer_TestFriend; // Forward declaration
 
 #ifndef NDEBUG // Debug build only
+
+    // avoid a global variableS altogether and expose a function‑local static via an inline accessor
+    inline std::mutex& outMutex() noexcept {
+        static std::mutex m;
+        return m;
+    }
+
+    inline std::atomic<unsigned>& lineCounter() noexcept {
+        static std::atomic<unsigned> c{0};
+        return c;
+    }
+
+    // Small helper extracted to make branch coverage testable in unit tests
+    namespace ScopeTimerDetail {
+        inline std::size_t finalize_snprintf_result(int n, char* line, std::size_t lineSize) noexcept {
+            if (n < 0) {
+                // Formatting error: write nothing
+                line[0] = '\0';
+                return 0U;
+            }
+            if (static_cast<std::size_t>(n) >= lineSize) {
+                // Truncated: snprintf wrote size-1 chars and a terminating '\0'
+                const std::size_t len = lineSize - 1U;
+                line[len] = '\0'; // ensure terminator
+                return len;
+            }
+            // Exact number of characters written (excluding '\0')
+            return static_cast<std::size_t>(n);
+        }
+    } // namespace ScopeTimerDetail
 
     /**
      * @brief A high-resolution scope timer for measuring execution time of code blocks.
@@ -101,7 +139,7 @@ namespace ewm_scopetimer {
          * @param where A std::string_view describing the scope or function being timed.
          * @param label An optional std::string_view label for the log output (defaults to "ScopeTimer").
          */
-        explicit ScopeTimer(std::string_view where, std::string_view label = "ScopeTimer") noexcept {
+        inline explicit ScopeTimer(std::string_view where, std::string_view label = "ScopeTimer") noexcept {
             if(isDisabled()) {
                 disabled_ = true;
                 return;
@@ -123,53 +161,62 @@ namespace ewm_scopetimer {
          *
          * Logs include thread ID, scope name, start and end timestamps, and elapsed time.
          */
-        ~ScopeTimer() noexcept {
-            if(disabled_) {
+        inline ~ScopeTimer() noexcept {
+            if (disabled_) {
                 return;
             }
 
             const auto endSteady = std::chrono::steady_clock::now();
-            const auto endWall = std::chrono::system_clock::now();
-            const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(endSteady - startSteady_).count();
+            const auto endWall   = std::chrono::system_clock::now();
+            const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endSteady - startSteady_).count();
 
-            // Use fixed-size stack buffers to avoid heap allocation
+            // Fixed-size stack buffers (no heap)
             char startBuf[32];
             char endBuf[32];
             char elapsedBuf[32];
 
             formatTime(startWall_, startBuf, sizeof(startBuf));
-            formatTime(endWall, endBuf, sizeof(endBuf));
-            formatElapsed(elapsedUs, elapsedBuf, sizeof(elapsedBuf));
+            formatTime(endWall,    endBuf,   sizeof(endBuf));
+            formatElapsed(elapsedNs, elapsedBuf, sizeof(elapsedBuf));
 
+            // Final line buffer
             char line[512];
-            const int n = std::snprintf(
-                line,
-                sizeof(line),
+
+            // Build the log line
+            int n = std::snprintf(
+                line, sizeof(line),
                 "[%.*s] TID=%03u | %.*s | start=%s | end=%s | elapsed=%s\n",
                 static_cast<int>(label_.size()), label_.data(),
                 threadNum_,
                 static_cast<int>(where_.size()), where_.data(),
                 startBuf,
                 endBuf,
-                elapsedBuf);
+                elapsedBuf
+            );
 
-            // Mutex to keep log lines non-interleaved, but only for output
-            static std::mutex outMutex;
-            std::lock_guard<std::mutex> lock(outMutex);
+            // Convert snprintf result to a safe byte count
+            const std::size_t len = ScopeTimerDetail::finalize_snprintf_result(n, line, sizeof(line));
 
-            if(FILE* fp = logFile()) {
-                std::fwrite(line, 1, (n > 0 ? static_cast<size_t>(n) : std::strlen(line)), fp);
+            // Keep log lines non-interleaved (mutex only around IO)
+            std::lock_guard<std::mutex> lock(outMutex());
+
+            if (FILE* fp = logFile()) {
+                if (len) {
+                    std::fwrite(line, 1, len, fp);
+                }
 
                 // Periodic flush to keep logs visible even with large buffers
-                static std::atomic<unsigned> lineCounter{ 0 };
-                unsigned cnt = lineCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+                unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1;
 
-                if(cnt % flushInterval() == 0) { // flush every N lines (configurable via SCOPE_TIMER_FLUSH_N)
+                if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
                     std::fflush(fp);
                 }
             }
         }
 
+    private:
+        friend class ewm::scopetimer::ScopeTimer_TestFriend; // Allow unit tests to access private members
+        
         /**
          * @brief Checks if the ScopeTimer is disabled based on the SCOPE_TIMER environment variable.
          *
@@ -179,7 +226,7 @@ namespace ewm_scopetimer {
          * @return true if disabled, false otherwise.
          */
         static inline bool isDisabled() noexcept {
-            static const bool disabled = []() -> bool {
+            static const bool disabled = []() {
                 const char* env = std::getenv("SCOPE_TIMER");
 
                 if(!env) {
@@ -198,7 +245,6 @@ namespace ewm_scopetimer {
             return disabled;
         }
 
-    private:
         /**
          * @brief Retrieves a unique thread ID number in a lock-free manner.
          *
@@ -207,7 +253,7 @@ namespace ewm_scopetimer {
          *
          * @return uint32_t The unique thread ID number.
          */
-        static uint32_t getThreadIdNumber() noexcept {
+        static inline uint32_t getThreadIdNumber() noexcept {
             thread_local uint32_t tid = 0;
 
             if(tid == 0) {
@@ -218,8 +264,8 @@ namespace ewm_scopetimer {
             return tid;
         }
 
-        // Accessor for the singleton FILE* so we can flush/close at process exit.
-        static FILE*& fileHandle() noexcept {
+        // Accessor for the singleton FILE* so I can flush/close at process exit.
+        static inline FILE*& fileHandle() noexcept {
             static FILE* fp{ nullptr };
             return fp;
         }
@@ -232,8 +278,8 @@ namespace ewm_scopetimer {
          *
          * @return unsigned The number of lines between flushes.
          */
-        static unsigned flushInterval() noexcept {
-            static const unsigned interval = []() noexcept -> unsigned {
+        static inline unsigned flushInterval() noexcept {
+            static const unsigned interval = []() noexcept {
                 if(const char* p = std::getenv("SCOPE_TIMER_FLUSH_N")) {
                     char* end = nullptr;
                     unsigned long v = std::strtoul(p, &end, 10);
@@ -254,7 +300,7 @@ namespace ewm_scopetimer {
          *
          * @return FILE* Pointer to the opened log file, or nullptr on failure.
          */
-        static FILE* logFile() noexcept {
+        static inline FILE* logFile() noexcept {
             FILE*& fp = fileHandle();
             if(fp) {
                 return fp;
@@ -266,10 +312,9 @@ namespace ewm_scopetimer {
                 dir.push_back('/');
             }
             std::string path = dir + "ScopeTimer.log";
-            FILE* f = std::fopen(path.c_str(), "a");
-            if(f) {
+            if (FILE* f = std::fopen(path.c_str(), "a")) {
                 // Use a static buffer for the FILE*, 1 MiB for throughput
-                static char* buf = new char[1 << 20];
+                static auto buf = new char[1 << 20];
                 std::setvbuf(f, buf, _IOFBF, 1 << 20);
                 fp = f;
                 // Ensure flush+close at process shutdown
@@ -289,6 +334,18 @@ namespace ewm_scopetimer {
             return fp;
         }
 
+        // One-time-selected elapsed-time formatter infrastructure
+        // I call through a cached function pointer to avoid branching in the hot path.
+        enum class TimeFormat { Auto, Seconds, Millis, Micros, Nanos };
+        using FormatterFn = void(*)(long long ns, char* out, size_t outSz) noexcept;
+
+        // Portable localtime shim
+#if defined(_WIN32)
+#  define LOCALTIME(tm_ptr, time_ptr) localtime_s((tm_ptr), (time_ptr))
+#else
+#  define LOCALTIME(tm_ptr, time_ptr) localtime_r((time_ptr), (tm_ptr))
+#endif
+
         /**
          * @brief Formats a system_clock time_point into a human-readable timestamp string.
          *
@@ -298,12 +355,13 @@ namespace ewm_scopetimer {
          * @param out Buffer to write the formatted string into.
          * @param outSz Size of the output buffer.
          */
-        static void formatTime(std::chrono::system_clock::time_point tp, char* out, size_t outSz) noexcept {
+        static inline void formatTime(std::chrono::system_clock::time_point tp, char* out, size_t outSz) noexcept {
             const std::time_t tt = std::chrono::system_clock::to_time_t(tp);
-            std::tm tm{};
-            localtime_r(&tt, &tm);
+            auto tm = std::tm{};
+            LOCALTIME(&tm, &tt); // Use thread-safe localtime_r/localtime_s
 
-            const int ms3 = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count() % 1000);
+            const auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+            const auto ms3 = static_cast<int>(ms_since_epoch % 1000);  // 0..999 fits in int 
 
             std::snprintf(out, outSz, "%04d-%02d-%02d %02d:%02d:%02d.%03d",
                           1900 + tm.tm_year, 1 + tm.tm_mon, tm.tm_mday,
@@ -311,29 +369,97 @@ namespace ewm_scopetimer {
         }
 
         /**
-         * @brief Formats elapsed time in microseconds into a human-readable string.
+         * @brief Elapsed time formatters selected once for speed.
          *
-         * Outputs seconds with millisecond precision if >= 1 second,
-         * milliseconds with microsecond precision if >= 1 millisecond,
-         * or microseconds otherwise.
+         * Each formatter accepts elapsed nanoseconds and writes a formatted
+         * string into the provided buffer. The active formatter is chosen once
+         * from the SCOPE_TIMER_FORMAT environment variable and cached via a
+         * function pointer to avoid branching in the hot path.
+         */
+        static inline void fmtSeconds(long long ns, char* out, size_t outSz) noexcept {
+            const long long sec   = ns / 1000000000LL;
+            const long long remMs = (ns / 1000000LL) % 1000LL; // 3 decimals
+            std::snprintf(out, outSz, "%lld.%03llds", sec, remMs);
+        }
+
+        static inline void fmtMillis(long long ns, char* out, size_t outSz) noexcept {
+            const long long ms    = ns / 1000000LL;
+            const long long remUs = (ns / 1000LL) % 1000LL;   // 3 decimals for ms
+            std::snprintf(out, outSz, "%lld.%03lldms", ms, remUs);
+        }
+
+        static inline void fmtMicros(long long ns, char* out, size_t outSz) noexcept {
+            const long long us    = ns / 1000LL;
+            const long long remNs = ns % 1000LL; // nanoseconds remainder
+            std::snprintf(out, outSz, "%lld.%03lldus", us, remNs);
+        }
+
+        static inline void fmtNanos(long long ns, char* out, size_t outSz) noexcept {
+            std::snprintf(out, outSz, "%lldns", ns);
+        }
+
+        /**
+         * @brief Automatic elapsed time formatter.
          *
-         * @param us Elapsed time in microseconds.
-         * @param out Buffer to write the formatted string into.
+         * Selects the most appropriate unit: seconds (>=1s), milliseconds (>=1ms), microseconds (>=1us), or nanoseconds (<1us).
+         * For explicit microseconds, use SCOPE_TIMER_FORMAT=MICROS.
+         */
+        static inline void fmtAuto(long long ns, char* out, size_t outSz) noexcept {
+            if (ns >= 1000000000LL) {
+                fmtSeconds(ns, out, outSz);
+            } else if (ns >= 1000000LL) {
+                fmtMillis(ns, out, outSz);
+            } else if (ns >= 1000LL) {
+                fmtMicros(ns, out, outSz);
+            } else {
+                fmtNanos(ns, out, outSz);
+            }
+        }
+
+        /**
+         * @brief One-time initialization of the elapsed-time formatter.
+         *
+         * Reads SCOPE_TIMER_FORMAT (case-insensitive). If it matches
+         * SECONDS/MILLIS/MICROS/NANOS, picks the corresponding formatter; otherwise
+         * defaults to the auto formatter.
+         */
+        static inline FormatterFn initFormatter() noexcept {
+            if (const char* env = std::getenv("SCOPE_TIMER_FORMAT"); env && *env) {
+                std::string s(env);
+                std::transform(s.begin(), s.end(), s.begin(),
+                            [](unsigned char c){ return static_cast<char>(std::toupper(c)); });
+
+                if (s == "SECONDS") return &fmtSeconds;
+                if (s == "MILLIS")  return &fmtMillis;
+                if (s == "MICROS")  return &fmtMicros;
+                if (s == "NANOS")   return &fmtNanos;
+            }
+            return &fmtAuto;
+        }        
+
+        /**
+         * @brief Accessor for the cached formatter function pointer.
+         *
+         * This ensures I pay the environment parsing cost once; no per-call branching
+         * occurs on the hot path - I just call through the function pointer.
+         */
+        static inline FormatterFn& getFormatter() noexcept {
+            static FormatterFn fn = initFormatter();
+            return fn;
+        }
+
+        /**
+         * @brief Formats elapsed time using a one-time-selected formatter.
+         *
+         * The formatter is chosen once from SCOPE_TIMER_FORMAT ("SECONDS" | "MILLIS" | "NANOS"),
+         * defaulting to automatic behavior if unset/invalid.
+         *
+         * @param ns   Elapsed time in nanoseconds.
+         * @param out  Output buffer.
          * @param outSz Size of the output buffer.
          */
-        static void formatElapsed(long long us, char* out, size_t outSz) noexcept {
-            const long long ms = us / 1000;
-            const long long remUs = us % 1000;
-
-            if(ms >= 1000) {
-                const long long sec = ms / 1000;
-                const long long remMs = ms % 1000;
-                std::snprintf(out, outSz, "%lld.%03llds", sec, remMs);
-            } else if(ms > 0) {
-                std::snprintf(out, outSz, "%lld.%03lldms", ms, remUs);
-            } else {
-                std::snprintf(out, outSz, "%lldus", us);
-            }
+        static inline void formatElapsed(long long ns, char* out, size_t outSz) noexcept {
+            getFormatter()(ns, out, outSz);
         }
 
         std::string_view where_; ///< Description of the scope being timed.
@@ -377,18 +503,66 @@ namespace ewm_scopetimer {
         struct LabelArg {
             std::string_view v{ "ScopeTimer" };
             LabelArg() = default;
-            LabelArg(std::string_view s)
+            explicit LabelArg(std::string_view s)
                 : v(s) {}
-            operator std::string_view() const noexcept {
+            std::string_view toStringView() const noexcept {
                 return v;
             }
         };
     } // namespace detail
 
+
+// -----------------------------------------------------------------------------
+// Macro helpers for generating unique variable names inside macros
+//
+// Why two-level CAT?  The token-pasting operator (##) does *not* expand its
+// arguments before pasting. I therefore use a two-step expansion so that
+// macro arguments like __LINE__ or __COUNTER__ are expanded first, then pasted.
+//
+// Why __COUNTER__?  __LINE__ can collide if multiple macro expansions occur on
+// the same source line (e.g., via a macro that emits multiple SCOPE_TIMER calls).
+// __COUNTER__ is a monotonically increasing integer within a translation unit,
+// so each expansion gets a distinct number regardless of line, creating a
+// globally unique identifier for the variable name in this TU. If __COUNTER__
+// is not available, I fall back to __LINE__.
+// -----------------------------------------------------------------------------
+#define ST_CAT2(a, b) a##b
+#define ST_CAT(a, b)  ST_CAT2(a, b)
+
+#if defined(__COUNTER__)
+#  define ST_UNIQ __COUNTER__
+#else
+#  define ST_UNIQ __LINE__
+#endif
+
+
 #ifndef SCOPE_TIMER
-#define SCOPE_TIMER(...)                                    \
-    ::ewm::ewm_scopetimer::ScopeTimer scopeTimerInstance__( \
-        SCOPE_FUNCTION, ::ewm::ewm_scopetimer::detail::LabelArg{ __VA_ARGS__ })
+#define SCOPE_TIMER(...)                                                             \
+    ::ewm::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
+        SCOPE_FUNCTION, ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toStringView())
+#endif
+
+/**
+ * @brief Conditionally starts a ScopeTimer for the current scope.
+ *
+ * This macro is similar to SCOPE_TIMER(...) but will only create the timer
+ * and record timing information if the provided boolean condition evaluates to true.
+ *
+ * @param cond Boolean expression; if true, timing starts for this scope.
+ * @param ...  Optional label string for the log entry.
+ *
+ * @note This macro is only active in debug builds (NDEBUG not defined). In release builds it compiles to a no-op.
+ *
+ * @code
+ * void foo() {
+ *     SCOPE_TIMER_IF(debugMode, "Debug block");
+ *     // ... code ...
+ * }
+ * @endcode
+ */
+#ifndef SCOPE_TIMER_IF
+#define SCOPE_TIMER_IF(cond, ...) \
+    if (cond) SCOPE_TIMER(__VA_ARGS__)
 #endif
 
 #else // Release build -> no-op
@@ -407,16 +581,20 @@ namespace ewm_scopetimer {
          * @param where Unused parameter describing the scope.
          * @param label Unused parameter for compatibility.
          */
-        explicit ScopeTimer(std::string_view, std::string_view = "ScopeTimer") noexcept {}
+        inline explicit ScopeTimer(std::string_view, std::string_view = "ScopeTimer") noexcept {}
     };
 
-#ifndef SCOPE_TIMER
+ #ifndef SCOPE_TIMER
 #define SCOPE_TIMER(...) \
-    do {                 \
-    } while(0)
+    do { (void)sizeof(#__VA_ARGS__); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_IF
+// Do not evaluate 'cond' or variadic args (avoid side effects); silences unused warnings
+#define SCOPE_TIMER_IF(cond, ...) \
+    do { (void)sizeof(cond); (void)sizeof(#__VA_ARGS__); } while(0)
 #endif
 
 #endif // NDEBUG
 
-} // namespace ewm_scopetimer
-} // namespace ewm
+} // namespace ewm::scopetimer
