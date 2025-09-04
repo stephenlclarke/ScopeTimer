@@ -1,0 +1,38 @@
+name: Build
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+env:
+  CLANG_VERSION: 18
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
+      - name: Install clang
+        run: |
+          sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)" ${{env.CLANG_VERSION}}
+          sudo apt install -y clang-tools-${{env.CLANG_VERSION}} libc++-${{env.CLANG_VERSION}}-dev
+      - name: Generate compilation database and build
+        run: |
+          mkdir build
+          cmake -S . -B build -G Ninja \
+          -DCMAKE_CXX_COMPILER=clang++-${{env.CLANG_VERSION}} \
+          -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=clang-scan-deps-${{env.CLANG_VERSION}}
+          # The project needs to be built so the `.modmap` files are generated 
+          cmake --build build --target all
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }} # Put the name of your token here
+        with:
+          # Set the property "sonar.cfamily.compile-commands" to the compilation database file
+          args: >
+            --define sonar.cfamily.compile-commands=build/compile_commands.json
