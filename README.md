@@ -1,16 +1,16 @@
 # ScopeTimer #
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=alert_status&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=bugs&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=code_smells&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=coverage&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=duplicated_lines_density&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=ncloc&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=reliability_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=security_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=sqale_index&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=sqale_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=vulnerabilities&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=bugs)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=coverage)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
 
 A tiny, zero-intrusion C++17 **RAII scope timer** for high-performance code
 paths. Drop a single macro into a scope and get a structured log line on exit
@@ -31,7 +31,7 @@ Rewritten from scratch for C++17/20.
     <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-❤️-brightgreen?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Buy Me a Coffee">
   </a>
   &nbsp;
-  <a href="https://github.com/stephenlclarke/fixdecoder/discussions">
+  <a href="https://github.com/stephenlclarke/scopetimer/discussions">
     <img src="https://img.shields.io/badge/Leave%20a%20Comment-💬-blue?style=for-the-badge" alt="Leave a Comment">
   </a>
 </p>
