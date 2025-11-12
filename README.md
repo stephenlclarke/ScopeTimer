@@ -652,3 +652,9 @@ Overwritten path diagnostic targets: 0
 [tests:logfile_null_branch]static void ewm::scopetimer::ScopeTimer_TestFriend::test_logfile_null_branch()
   count=1  min=71us  avg=71us  max=71us  -
 ```
+
+---
+
+© 2025 Steve Clarke · Released under the [AGPL-3.0 License](https://www.gnu.org/licenses/agpl-3.0.html)
+
+---
