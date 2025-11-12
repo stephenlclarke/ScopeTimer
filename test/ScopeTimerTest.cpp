@@ -23,6 +23,7 @@ public:
         init_exe_path(argc, argv);
         if (int rc = child_smoke_main_if_requested(); rc == 0) return 0;
 
+        test_is_disabled_env_non_disabled_branch();
         test_simple_scope();
         test_nested_scopes();
         test_conditional_timer();
@@ -35,6 +36,7 @@ public:
         test_fmt_auto_seconds_branch();
         test_finalize_snprintf_result_branches();
         test_disabled_via_env_child_process();
+        test_disabled_case_insensitivity_child_process();
         test_bad_env_values_child_process();
         test_flushN_variants_child_process();
         test_logdir_edge_cases_child_process();
@@ -71,6 +73,13 @@ private:
     }
 
     // ------------------ individual tests ------------------
+    static void test_is_disabled_env_non_disabled_branch() {
+        ::setenv("SCOPE_TIMER", "maybe", 1);
+        bool disabled = ScopeTimer::isDisabled();
+        expect(!disabled, "isDisabled returns false for unrecognized env value");
+        ::unsetenv("SCOPE_TIMER");
+    }
+
     static void test_simple_scope() {
         SCOPE_TIMER("tests:simple_scope");
         busyFor(50us);
@@ -218,6 +227,19 @@ private:
         std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
         int rc = run_child_with_env({{"SCOPE_TIMER","0"},{"SCOPE_TIMER_FORMAT","MICROS"},{"SCOPE_TIMER_LOG_DIR",tmpdir}});
         expect(rc == 0, "disabled via env executed in child process");
+    }
+
+    static void test_disabled_case_insensitivity_child_process() {
+        const char* variants[] = {"off", "Off", "FALSE", "False", "nO"};
+        for (const char* variant : variants) {
+            std::vector<std::pair<std::string,std::string>> env = {
+                {"SCOPE_TIMER", variant},
+                {"SCOPE_TIMER_FORMAT", "MICROS"}
+            };
+            int rc = run_child_with_env(env);
+            const std::string msg = std::string("disabled env variant '") + variant + "' handled in child process";
+            expect(rc == 0, msg.c_str());
+        }
     }
 
     static void test_bad_env_values_child_process() {

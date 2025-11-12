@@ -93,7 +93,7 @@ namespace ewm::scopetimer {
 
 #ifndef NDEBUG // Debug build only
 
-    // avoid a global variableS altogether and expose a function‑local static via an inline accessor
+    // avoid a global variable altogether and expose a function‑local static via an inline accessor
     inline std::mutex& outMutex() noexcept {
         static std::mutex m;
         return m;
@@ -112,12 +112,14 @@ namespace ewm::scopetimer {
                 line[0] = '\0';
                 return 0U;
             }
+
             if (static_cast<std::size_t>(n) >= lineSize) {
                 // Truncated: snprintf wrote size-1 chars and a terminating '\0'
                 const std::size_t len = lineSize - 1U;
                 line[len] = '\0'; // ensure terminator
                 return len;
             }
+
             // Exact number of characters written (excluding '\0')
             return static_cast<std::size_t>(n);
         }
@@ -198,7 +200,7 @@ namespace ewm::scopetimer {
             const std::size_t len = ScopeTimerDetail::finalize_snprintf_result(n, line, sizeof(line));
 
             // Keep log lines non-interleaved (mutex only around IO)
-            std::lock_guard<std::mutex> lock(outMutex());
+            std::lock_guard lock(outMutex());
 
             if (FILE* fp = logFile()) {
                 if (len) {
@@ -280,9 +282,11 @@ namespace ewm::scopetimer {
          */
         static inline unsigned flushInterval() noexcept {
             static const unsigned interval = []() noexcept {
+
                 if(const char* p = std::getenv("SCOPE_TIMER_FLUSH_N")) {
                     char* end = nullptr;
                     unsigned long v = std::strtoul(p, &end, 10);
+
                     if(end != p && *end == '\0' && v > 0UL && v <= 1000000UL) {
                         return static_cast<unsigned>(v);
                     }
@@ -302,26 +306,34 @@ namespace ewm::scopetimer {
          */
         static inline FILE* logFile() noexcept {
             FILE*& fp = fileHandle();
+
             if(fp) {
                 return fp;
             }
+
             // Singleton FILE* with large user buffer for high-throughput buffered IO
             const char* env = std::getenv("SCOPE_TIMER_DIR");
             std::string dir = (env && *env) ? std::string(env) : std::string("/tmp");
+
             if(!dir.empty() && dir.back() != '/') {
                 dir.push_back('/');
             }
+
             std::string path = dir + "ScopeTimer.log";
+
             if (FILE* f = std::fopen(path.c_str(), "a")) {
                 // Use a static buffer for the FILE*, 1 MiB for throughput
                 static auto buf = new char[1 << 20];
                 std::setvbuf(f, buf, _IOFBF, 1 << 20);
                 fp = f;
+
                 // Ensure flush+close at process shutdown
                 static bool registered = false;
+
                 if(!registered) {
                     std::atexit([]() noexcept {
                         FILE* fh = fileHandle();
+
                         if(fh) {
                             std::fflush(fh);
                             std::fclose(fh);
@@ -363,9 +375,18 @@ namespace ewm::scopetimer {
             const auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
             const auto ms3 = static_cast<int>(ms_since_epoch % 1000);  // 0..999 fits in int 
 
-            std::snprintf(out, outSz, "%04d-%02d-%02d %02d:%02d:%02d.%03d",
-                          1900 + tm.tm_year, 1 + tm.tm_mon, tm.tm_mday,
-                          tm.tm_hour, tm.tm_min, tm.tm_sec, ms3);
+            std::snprintf(
+                out, 
+                outSz, 
+                "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                1900 + tm.tm_year, 
+                1 + tm.tm_mon, 
+                tm.tm_mday,
+                tm.tm_hour, 
+                tm.tm_min, 
+                tm.tm_sec, 
+                ms3
+            );
         }
 
         /**
@@ -502,9 +523,12 @@ namespace ewm::scopetimer {
     namespace detail {
         struct LabelArg {
             std::string_view v{ "ScopeTimer" };
+
             LabelArg() = default;
+
             explicit LabelArg(std::string_view s)
                 : v(s) {}
+
             std::string_view toStringView() const noexcept {
                 return v;
             }
