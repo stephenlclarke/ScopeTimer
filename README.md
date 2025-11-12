@@ -70,8 +70,8 @@ Rewritten from scratch for C++17/20.
 - **RAII timing**: starts on construction, logs on destruction.
 - **Unique per-use macro**: safe to place multiple timers in the same scope.
 - **Thread-safe logging** with buffered I/O and periodic flush.
-- **One-time-selected formatter** for elapsed units via `SCOPE_TIMER_FORMAT`.
-  No per-call branching.
+- **One-time-selected formatter** (functor) for elapsed units via
+  `SCOPE_TIMER_FORMAT`. No per-call branching.
 - **Portable time formatting** (uses `localtime_s`/`localtime_r`).
 
 ### Macro uniqueness: `__COUNTER__` and `__LINE__` ###
