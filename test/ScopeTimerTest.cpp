@@ -321,7 +321,7 @@ private:
         char templ[] = "/tmp/scopetimerXXXXXX";
         char* tdir = ::mkdtemp(templ);
         std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
-        int rc = run_child_with_env({{"SCOPE_TIMER","0"},{"SCOPE_TIMER_FORMAT","MICROS"},{"SCOPE_TIMER_LOG_DIR",tmpdir}});
+        int rc = run_child_with_env({{"SCOPE_TIMER","0"},{"SCOPE_TIMER_FORMAT","MICROS"},{"SCOPE_TIMER_DIR",tmpdir}});
         expect(rc == 0, "disabled via env executed in child process");
     }
 
@@ -339,7 +339,7 @@ private:
     }
 
     static void test_bad_env_values_child_process() {
-        int rc = run_child_with_env({{"SCOPE_TIMER_LOG_DIR","/definitely/does/not/exist"},{"SCOPE_TIMER_FLUSH_N","bogus"},{"SCOPE_TIMER_FORMAT","WONKY"}});
+        int rc = run_child_with_env({{"SCOPE_TIMER_DIR","/definitely/does/not/exist"},{"SCOPE_TIMER_FLUSH_N","bogus"},{"SCOPE_TIMER_FORMAT","WONKY"}});
         expect(rc == 0, "bad env values handled in child process");
     }
 
@@ -355,12 +355,12 @@ private:
     }
 
     static void test_logdir_edge_cases_child_process() {
-        int rc1 = run_child_with_env({{"SCOPE_TIMER_LOG_DIR","/definitely-not-a-real-dir-xyz"},{"SCOPE_TIMER_FORMAT","MICROS"}});
+        int rc1 = run_child_with_env({{"SCOPE_TIMER_DIR","/definitely-not-a-real-dir-xyz"},{"SCOPE_TIMER_FORMAT","MICROS"}});
         expect(rc1 == 0, "non-existent log dir handled in child process");
         char templ[] = "/tmp/scopetimer_ldirXXXXXX";
         char* tdir = ::mkdtemp(templ);
         std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
-        int rc2 = run_child_with_env({{"SCOPE_TIMER_LOG_DIR", tmpdir},{"SCOPE_TIMER_FORMAT","MICROS"}});
+        int rc2 = run_child_with_env({{"SCOPE_TIMER_DIR", tmpdir},{"SCOPE_TIMER_FORMAT","MICROS"}});
         expect(rc2 == 0, "valid log dir handled in child process");
     }
 
@@ -369,7 +369,7 @@ private:
         // exercising the false path of `if (FILE* fp = logFile()) { ... }`.
         // Use PID to ensure uniqueness.
         std::string bogus = "/tmp/scopetimer_no_such_dir_" + std::to_string(::getpid());
-        ::setenv("SCOPE_TIMER_LOG_DIR", bogus.c_str(), 1);
+        ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
         ::setenv("SCOPE_TIMER_FORMAT", "MICROS", 1);
 
         // Emit a timing scope; this should NOT create a logfile because the directory is invalid.

@@ -318,6 +318,18 @@ namespace ewm::scopetimer {
         }
 
         /**
+         * @brief Resolves the log directory from environment overrides.
+         *
+         * Controlled solely by SCOPE_TIMER_DIR; defaults to /tmp when unset/empty.
+         */
+        static inline std::string logDirectory() {
+            if (const char* primary = std::getenv("SCOPE_TIMER_DIR"); primary && *primary) {
+                return std::string(primary);
+            }
+            return std::string("/tmp");
+        }
+
+        /**
          * @brief Provides a singleton FILE* for logging with a large user buffer.
          *
          * The log file path is controlled by the SCOPE_TIMER_DIR environment variable,
@@ -332,9 +344,11 @@ namespace ewm::scopetimer {
                 return fp;
             }
 
+            static std::string lastFailedPath;
+            static bool lastAttemptFailed = false;
+
             // Singleton FILE* with large user buffer for high-throughput buffered IO
-            const char* env = std::getenv("SCOPE_TIMER_DIR");
-            std::string dir = (env && *env) ? std::string(env) : std::string("/tmp");
+            std::string dir = logDirectory();
 
             if(!dir.empty() && dir.back() != '/') {
                 dir.push_back('/');
@@ -342,11 +356,17 @@ namespace ewm::scopetimer {
 
             std::string path = dir + "ScopeTimer.log";
 
+            if (lastAttemptFailed && path == lastFailedPath) {
+                return nullptr;
+            }
+
             if (FILE* f = std::fopen(path.c_str(), "a")) {
                 // Use a static buffer for the FILE*, 1 MiB for throughput
                 static auto buf = new char[1 << 20];
                 std::setvbuf(f, buf, _IOFBF, 1 << 20);
                 fp = f;
+                lastAttemptFailed = false;
+                lastFailedPath.clear();
 
                 // Ensure flush+close at process shutdown
                 static bool registered = false;
@@ -363,6 +383,11 @@ namespace ewm::scopetimer {
                     });
                     registered = true;
                 }
+            }
+
+            if (!fp) {
+                lastFailedPath = path;
+                lastAttemptFailed = true;
             }
             return fp;
         }
