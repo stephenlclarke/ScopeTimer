@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <fstream>
+#include <cerrno>
 
 using namespace std::chrono_literals;
 
@@ -27,6 +29,7 @@ public:
         test_simple_scope();
         test_nested_scopes();
         test_conditional_timer();
+        test_conditional_timer_spans_scope();
         test_looped_work();
         test_threaded();
         test_env_format_variants();
@@ -61,6 +64,47 @@ private:
 
     static inline void busyFor(std::chrono::microseconds us) {
         std::this_thread::sleep_for(us);
+    }
+
+    static double parseElapsedMillis(const std::string& line) {
+        const std::string needle = "elapsed=";
+        const auto pos = line.find(needle);
+        if (pos == std::string::npos) {
+            return -1.0;
+        }
+        const auto valuePos = pos + needle.size();
+        const auto endPos = line.find_first_of(" \t\r\n", valuePos);
+        const std::string token = line.substr(valuePos, endPos == std::string::npos ? std::string::npos : endPos - valuePos);
+
+        if (token.size() < 2 || token.substr(token.size() - 2) != "ms") {
+            return -1.0;
+        }
+
+        std::string numeric = token.substr(0, token.size() - 2);
+        char* endPtr = nullptr;
+        const double value = std::strtod(numeric.c_str(), &endPtr);
+        if (!endPtr || *endPtr != '\0') {
+            return -1.0;
+        }
+        return value;
+    }
+
+    static double readElapsedMillisFromLog(const std::string& path, const std::string& label) {
+        std::ifstream in(path);
+        if (!in) {
+            return -1.0;
+        }
+        std::string line;
+        double latest = -1.0;
+        while (std::getline(in, line)) {
+            if (line.find(label) != std::string::npos) {
+                const double candidate = parseElapsedMillis(line);
+                if (candidate >= 0.0) {
+                    latest = candidate;
+                }
+            }
+        }
+        return latest;
     }
 
     static std::string shellEscape(const std::string& s) {
@@ -106,6 +150,41 @@ private:
         SCOPE_TIMER_IF(false, "tests:conditional:off");
         busyFor(5us);
         expect(true, "conditional timer executed");
+    }
+
+    static void test_conditional_timer_spans_scope() {
+        char templ[] = "/tmp/scopetimer_ifXXXXXX";
+        char* dir = ::mkdtemp(templ);
+        std::string tmpdir;
+        bool cleanupDir = false;
+        if (dir) {
+            tmpdir = dir;
+            cleanupDir = true;
+        } else {
+            tmpdir = "/tmp/scopetimer_if_fallback";
+            if (::mkdir(tmpdir.c_str(), 0700) == 0 || errno == EEXIST) {
+                cleanupDir = false; // do not remove shared fallback
+            }
+        }
+
+        const std::string logfile = tmpdir + "/ScopeTimer.log";
+        std::remove(logfile.c_str());
+
+        int rc = run_child_with_env({
+            {"SCOPETIMER_PROBE", "if_scope"},
+            {"SCOPE_TIMER_DIR", tmpdir},
+            {"SCOPE_TIMER_FORMAT", "MILLIS"},
+            {"SCOPE_TIMER_FLUSH_N", "1"}
+        });
+        expect(rc == 0, "child process for conditional timer probe exited cleanly");
+
+        const double elapsedMs = readElapsedMillisFromLog(logfile, "tests:conditional:lifetime");
+        expect(elapsedMs >= 5.0, "SCOPE_TIMER_IF spans enclosing scope");
+
+        std::remove(logfile.c_str());
+        if (cleanupDir) {
+            ::rmdir(tmpdir.c_str());
+        }
     }
 
     static void test_looped_work() {
@@ -206,17 +285,34 @@ private:
     // --- child process helpers (probe mode) ---
     static int child_probe_main_if_requested() {
         const char* probe = ::getenv("SCOPETIMER_PROBE");
-        if (!probe || std::string(probe) != "1") return -1;
-        SCOPE_TIMER("tests:child:probe");
-        busyFor(100us);
-        return 0;
+        if (!probe) return -1;
+        const std::string mode = probe;
+        if (mode == "1") {
+            SCOPE_TIMER("tests:child:probe");
+            busyFor(100us);
+            return 0;
+        }
+        if (mode == "if_scope") {
+            SCOPE_TIMER_IF(true, "tests:conditional:lifetime");
+            busyFor(20000us);
+            return 0;
+        }
+        return -1;
     }
 
     static int run_child_with_env(const std::vector<std::pair<std::string,std::string>>& envs) {
-        std::string cmd;
-        for (const auto& kv : envs) cmd += kv.first + "=" + kv.second + " ";
-        cmd += shellEscape(s_exe_path);
-        cmd = std::string("SCOPETIMER_PROBE=1 ") + cmd;
+        std::string envBlock;
+        bool probeSet = false;
+        for (const auto& kv : envs) {
+            if (kv.first == "SCOPETIMER_PROBE") {
+                probeSet = true;
+            }
+            envBlock += kv.first + "=" + kv.second + " ";
+        }
+        if (!probeSet) {
+            envBlock = std::string("SCOPETIMER_PROBE=1 ") + envBlock;
+        }
+        std::string cmd = envBlock + shellEscape(s_exe_path);
         cmd += " >/dev/null 2>&1";
         return std::system(cmd.c_str());
     }

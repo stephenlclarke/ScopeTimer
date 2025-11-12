@@ -97,6 +97,7 @@
 #include <cstring>
 #include <ctime>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -553,6 +554,27 @@ namespace ewm::scopetimer {
                 return v;
             }
         };
+
+        class ConditionalScopeTimer {
+        public:
+            template <typename LabelFactory>
+            ConditionalScopeTimer(bool enabled, std::string_view where, LabelFactory&& labelFactory) noexcept {
+                if (enabled) {
+                    timer_.emplace(where, labelFactory());
+                } else {
+                    (void)where;
+                }
+            }
+
+            ~ConditionalScopeTimer() = default;
+            ConditionalScopeTimer(const ConditionalScopeTimer&) = delete;
+            ConditionalScopeTimer& operator=(const ConditionalScopeTimer&) = delete;
+            ConditionalScopeTimer(ConditionalScopeTimer&&) = delete;
+            ConditionalScopeTimer& operator=(ConditionalScopeTimer&&) = delete;
+
+        private:
+            std::optional<ScopeTimer> timer_;
+        };
     } // namespace detail
 
 
@@ -605,8 +627,11 @@ namespace ewm::scopetimer {
  * @endcode
  */
 #ifndef SCOPE_TIMER_IF
-#define SCOPE_TIMER_IF(cond, ...) \
-    if (cond) SCOPE_TIMER(__VA_ARGS__)
+#define SCOPE_TIMER_IF(cond, ...)                                                          \
+    ::ewm::scopetimer::detail::ConditionalScopeTimer                                       \
+        ST_CAT(scopeTimerConditional__, ST_UNIQ)((cond), SCOPE_FUNCTION, [&]() noexcept {  \
+            return ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toStringView();      \
+        })
 #endif
 
 #else // Release build -> no-op
