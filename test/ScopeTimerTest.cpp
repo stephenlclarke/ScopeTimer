@@ -21,7 +21,7 @@ public:
     // Entry point that runs the whole suite and returns the number of failures.
     static int run_all(int argc, char** argv) {
         init_exe_path(argc, argv);
-        if (int rc = child_smoke_main_if_requested(); rc == 0) return 0;
+        if (int rc = child_probe_main_if_requested(); rc == 0) return 0;
 
         test_is_disabled_env_non_disabled_branch();
         test_simple_scope();
@@ -203,11 +203,11 @@ private:
         }
     }
 
-    // --- child process helpers ---
-    static int child_smoke_main_if_requested() {
-        const char* smoke = ::getenv("SCOPETIMER_SMOKE");
-        if (!smoke || std::string(smoke) != "1") return -1;
-        SCOPE_TIMER("tests:child:smoke");
+    // --- child process helpers (probe mode) ---
+    static int child_probe_main_if_requested() {
+        const char* probe = ::getenv("SCOPETIMER_PROBE");
+        if (!probe || std::string(probe) != "1") return -1;
+        SCOPE_TIMER("tests:child:probe");
         busyFor(100us);
         return 0;
     }
@@ -216,7 +216,7 @@ private:
         std::string cmd;
         for (const auto& kv : envs) cmd += kv.first + "=" + kv.second + " ";
         cmd += shellEscape(s_exe_path);
-        cmd = std::string("SCOPETIMER_SMOKE=1 ") + cmd;
+        cmd = std::string("SCOPETIMER_PROBE=1 ") + cmd;
         cmd += " >/dev/null 2>&1";
         return std::system(cmd.c_str());
     }
