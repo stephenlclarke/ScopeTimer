@@ -11,6 +11,7 @@
 [![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
 [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
+![Repo Visitors](https://visitor-badge.laobi.icu/badge?page_id=stephenlclarke.ScopeTimer)
 
 A tiny, zero-intrusion C++17 **RAII scope timer** for high-performance code
 paths. Drop a single macro into a scope and get a structured log line on exit
