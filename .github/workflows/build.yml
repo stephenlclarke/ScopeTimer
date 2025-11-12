@@ -26,11 +26,11 @@ jobs:
       CTEST_OUTPUT_ON_FAILURE: "1"
 
     steps:
-      - name: Install prerequisites (cmake, ninja, coverage tools, git, ca-certs)
+      - name: Install prerequisites (cmake, ninja, coverage tools, git, ca-certs, unzip)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake ninja-build gcovr lcov git ca-certificates
+            cmake ninja-build gcovr lcov git ca-certificates unzip jq
           update-ca-certificates
 
       - name: Checkout
@@ -49,6 +49,7 @@ jobs:
       - name: Install Sonar Build Wrapper
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
 
+      # Equivalent to: rm -rf build && cmake -S . -B build
       - name: Configure (CMake • Debug • Ninja • GCC 15)
         env:
           CC: gcc
@@ -61,26 +62,37 @@ jobs:
             -DCMAKE_C_COMPILER="${CC}" \
             -DCMAKE_CXX_COMPILER="${CXX}"
 
-      # Wrap ONLY the compile step (best practice)
-      - name: Build (wrapped for Sonar C/C++)
+      # Equivalent to: cmake --build build -j
+      - name: Build (unwrapped compile)
         run: |
-          build-wrapper-linux-x86-64 --out-dir "${BUILD_WRAPPER_OUT_DIR}" \
-            cmake --build build -j"$(ninja -j 0 -v >/dev/null 2>&1 || nproc)"
+          cmake --build build -j"$(nproc)"
 
+      # Equivalent to: cmake --build build --target sonar_bw -j
+      - name: Build (CMake target sonar_bw wrapped by build-wrapper)
+        run: |
+          cmake --build build --target sonar_bw -j"$(nproc)"
+        env:
+          # Ensure the install step put it on PATH; the CMake target will also auto-detect.
+          BUILD_WRAPPER_OUT_DIR: ${{ env.BUILD_WRAPPER_OUT_DIR }}
+
+      # Equivalent to: ctest --test-dir build --output-on-failure
       - name: Test
         run: |
           ctest --test-dir build --output-on-failure
 
-      # Your CMake "coverage" target should emit build/sonarqube-coverage.xml
-      # and use gcov from GCC 15 (in this container, `gcov` is GCC 15 already).
+      # Equivalent to: cmake --build build --target coverage
       - name: Coverage
         run: |
           cmake --build build --target coverage
 
-      # Scanner will read sonar-project.properties at repo root
+      # Equivalent to: sonar-scanner
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          # If not configured org-wide, also set:
-          # SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          # Keep properties-file defaults
+          args: >
+            --define sonar.organization=stephenlclarke
+            --define sonar.projectKey=stephenlclarke_ScopeTimer

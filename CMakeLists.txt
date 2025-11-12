@@ -1,6 +1,40 @@
 cmake_minimum_required(VERSION 3.16)
 project(ScopeTimer LANGUAGES CXX)
 
+# --- GCC-15 toolchain defaults (local + CI) ------------------------------
+# If the user hasn't explicitly set CC/CXX/GCOV, try to default to GCC 15.
+# This helps ensure gcovr coverage is non-zero (AppleClang won't produce .gcda).
+# These environment variables are only set if currently unset.
+if(NOT DEFINED ENV{CC} AND NOT CMAKE_C_COMPILER)
+  find_program(_GCC15 gcc-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
+  if(_GCC15)
+    set(ENV{CC} "${_GCC15}")
+    message(STATUS "CC not set; defaulting to: $ENV{CC}")
+  endif()
+endif()
+if(NOT DEFINED ENV{CXX} AND NOT CMAKE_CXX_COMPILER)
+  find_program(_GPP15 g++-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
+  if(_GPP15)
+    set(ENV{CXX} "${_GPP15}")
+    message(STATUS "CXX not set; defaulting to: $ENV{CXX}")
+  endif()
+endif()
+if(NOT DEFINED ENV{GCOV})
+  find_program(_GCOV15 gcov-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
+  if(_GCOV15)
+    set(ENV{GCOV} "${_GCOV15}")
+    message(STATUS "GCOV not set; defaulting to: $ENV{GCOV}")
+  endif()
+endif()
+
+# If CMake compilers are still unset, adopt the chosen env defaults now.
+if(NOT CMAKE_C_COMPILER AND DEFINED ENV{CC})
+  set(CMAKE_C_COMPILER "$ENV{CC}" CACHE FILEPATH "C compiler" FORCE)
+endif()
+if(NOT CMAKE_CXX_COMPILER AND DEFINED ENV{CXX})
+  set(CMAKE_CXX_COMPILER "$ENV{CXX}" CACHE FILEPATH "C++ compiler" FORCE)
+endif()
+
 # --- Basics ---------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,16 +105,23 @@ endif()
 
 find_program(GCOVR_EXECUTABLE NAMES gcovr REQUIRED)
 # Auto-pick a gcov that matches the GCC in use (e.g. gcov-15).
+# Honor explicit GCOV env if supplied (e.g., gcov-15). We'll skip auto-detect if set.
+if(DEFINED ENV{GCOV} AND NOT "$ENV{GCOV}" STREQUAL "")
+  set(GCOV_EXE "$ENV{GCOV}")
+  message(STATUS "Using GCOV from environment: ${GCOV_EXE}")
+endif()
 set(_GCC_MAJOR "")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   if(CMAKE_CXX_COMPILER_VERSION)
     string(REGEX MATCH "^[0-9]+" _GCC_MAJOR "${CMAKE_CXX_COMPILER_VERSION}")
   endif()
 endif()
-if(_GCC_MAJOR)
-  find_program(GCOV_EXE NAMES gcov-${_GCC_MAJOR} gcov REQUIRED)
-else()
-  find_program(GCOV_EXE NAMES gcov REQUIRED)
+if(NOT GCOV_EXE)
+  if(_GCC_MAJOR)
+    find_program(GCOV_EXE NAMES gcov-${_GCC_MAJOR} gcov REQUIRED)
+  else()
+    find_program(GCOV_EXE NAMES gcov REQUIRED)
+  endif()
 endif()
 
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/cmake")
@@ -236,10 +277,14 @@ if(ENABLE_SONAR)
       COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
       COMMAND ${SONAR_BUILD_WRAPPER_EXE} --out-dir ${SONAR_BW_OUT}
               ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --clean-first -j
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              ${CMAKE_BINARY_DIR}/compile_commands.json
+              ${SONAR_BW_OUT}/compile_commands.json
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
       VERBATIM
     )
   else()
+
     message(STATUS "Sonar build-wrapper not available (download failed). 'sonar_bw' will print a helpful error.")
     add_custom_target(sonar_bw
       COMMENT "ERROR: Sonar build-wrapper missing — set SONAR_BUILD_WRAPPER to skip auto-download and use a custom path"
