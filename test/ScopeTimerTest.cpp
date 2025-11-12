@@ -110,7 +110,7 @@ private:
 
     static void test_looped_work() {
         SCOPE_TIMER("tests:looped:total");
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 1000; ++i) {
             SCOPE_TIMER("tests:looped:iter");
             busyFor(5us);
         }
@@ -120,7 +120,7 @@ private:
     static void test_threaded() {
         SCOPE_TIMER("tests:threaded:total");
         std::vector<std::thread> tg;
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 1000; ++i) {
             tg.emplace_back([i]() {
                 SCOPE_TIMER("tests:threaded:worker");
                 std::this_thread::sleep_for(std::chrono::microseconds{10 + i * 5});
