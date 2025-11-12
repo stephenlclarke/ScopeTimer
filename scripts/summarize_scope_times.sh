@@ -26,7 +26,7 @@
 #   1) Per-key two-line block:
 #        <key>
 #        <v1> <v2> <v3> ...   (all elapsed values in order seen)
-#   2) Per-key summary: count, min, avg, max
+#   2) Per-key summary: count, min, avg, max, trend (↑ = increasing, ↓ = decreasing, - = stable)
 #
 # Usage:
 #   ./summarize_scope_times.sh [ScopeTimer.log.cleaned]
@@ -128,9 +128,9 @@ END {
       delta = lavg - favg
       rel = (favg > 0 ? delta / favg : 0)
       # Consider trend only if both absolute and relative change pass thresholds
-      if (delta > 5 && rel > 0.05)      trend = "/"
-      else if (delta < -5 && -rel > 0.05) trend = "\\"
-      else                               trend = "-"
+      if (delta > 5 && rel > 0.05)        trend = "↑"
+      else if (delta < -5 && -rel > 0.05) trend = "↓"
+      else                                trend = "-"
     }
 
     printf("%s\n  count=%d  min=%s  avg=%s  max=%s  %s\n\n",
