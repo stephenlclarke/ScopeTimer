@@ -1,16 +1,16 @@
 # ScopeTimer #
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=alert_status&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=bugs&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=code_smells&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=coverage&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=duplicated_lines_density&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=ncloc&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=reliability_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=security_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=sqale_index&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=sqale_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=steve-clarke_scopetimer&metric=vulnerabilities&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=steve-clarke_scopetimer)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=alert_status&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=bugs&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=code_smells&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=coverage&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=duplicated_lines_density&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=ncloc&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=reliability_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=security_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=sqale_index&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=sqale_rating&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_scopetimer&metric=vulnerabilities&token=86037d8709acbe615f8d68eff746b37a7250e7d6)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_scopetimer)
 
 A tiny, zero-intrusion C++17 **RAII scope timer** for high-performance code
 paths. Drop a single macro into a scope and get a structured log line on exit
@@ -20,9 +20,27 @@ debug builds it's lock-light and allocation-free on the hot path.
 The concept for this class & macro originated from a software project I worked
 on in the early 1990's while at Merril Lynch. It owed a lot to James O.
 Coplien's Advanced C++: Programming Styles and Idioms (Addison-Wesley, first
-ed. 1991). A very smart guy that I had the pleaseure to work with while at
-Bloomberg in 2016. This version is a re-imagining of the original. Rewritten
-from scratch for C++17/20.
+ed. 1991). A very smart guy that I had the pleaseure to work with when I was
+at Bloomberg in 2016. This version is a re-imagining of the original. 
+Rewritten from scratch for C++17/20.
+
+---
+
+<p align="center">
+  <a href="https://buy.stripe.com/8x23cvaHjaXzdg30Ni77O00">
+    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-❤️-brightgreen?style=for-the-badge&logo=buymeacoffee&logoColor=white" alt="Buy Me a Coffee">
+  </a>
+  &nbsp;
+  <a href="https://github.com/stephenlclarke/fixdecoder/discussions">
+    <img src="https://img.shields.io/badge/Leave%20a%20Comment-💬-blue?style=for-the-badge" alt="Leave a Comment">
+  </a>
+</p>
+
+<p align="center">
+  <sub>☕ If you found this project useful, consider buying me a coffee or dropping a comment — it keeps the caffeine and ideas flowing! 😄</sub>
+</p>
+
+---
 
 ## What it's for ##
 
@@ -66,7 +84,7 @@ helper:
 #define ST_CAT(a,b)  ST_CAT2(a,b)
 ```
 
-I then suffix the variable with **`__COUNTER__` when available**, which is a
+Then I suffix the variable with **`__COUNTER__` when available**, which is a
 translation-unit-global monotonically increasing integer, ensuring **global
 uniqueness** even if multiple timers are emitted on the **same source line**
 (e.g., from another macro). If a compiler doesn't support `__COUNTER__`,
