@@ -1,60 +1,83 @@
-name: SonarQube
+name: Build & SonarQube
+
 on:
   push:
     branches: [ main ]
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   build:
-    name: Build and analyze
+    name: GCC 15 • Build • Test • Coverage • Sonar
     runs-on: ubuntu-latest
+
     env:
-      BUILD_WRAPPER_OUT_DIR: build/bw-output  # matches sonar-project.properties
+      # Must align with sonar-project.properties:
+      # sonar.cfamily.compile-commands=build/bw-output/compile_commands.json
+      BUILD_WRAPPER_OUT_DIR: build/bw-output
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Optional: ensure required tools exist on GitHub-hosted runners
-      - name: Install build tools
+      - name: Install GCC 15, Ninja, coverage tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build lcov gcovr
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-15 g++-15 gcovr lcov ninja-build
+          # Expose compilers and gcov-15 to later steps
+          echo "CC=/usr/bin/gcc-15"            >> $GITHUB_ENV
+          echo "CXX=/usr/bin/g++-15"           >> $GITHUB_ENV
+          echo "GCOV=/usr/bin/gcov-15"         >> $GITHUB_ENV
+          echo "CTEST_OUTPUT_ON_FAILURE=1"     >> $GITHUB_ENV
+          # Sanity check
+          ${{ env.CC }} --version
+          ${{ env.CXX }} --version
+          ${{ env.GCOV }} --version
+          ninja --version
 
       - name: Install Sonar Build Wrapper
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
 
-      # === Configure (kept from your flow) ===
-      - name: Configure CMake (Debug, Ninja, gcc-15)
+      - name: Configure (CMake • Debug • Ninja • GCC 15)
         run: |
           rm -rf build "${{ env.BUILD_WRAPPER_OUT_DIR }}"
           cmake -S . -B build -G Ninja \
-            -DCMAKE_CXX_COMPILER=gcc-15 \
-            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=gcc-scan-deps-15
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_COMPILER="${{ env.CC }}" \
+            -DCMAKE_CXX_COMPILER="${{ env.CXX }}"
 
-      # === Wrap only the compile ===
+      # Wrap ONLY the compile so the build-wrapper emits bw-output/compile_commands.json
       - name: Build (wrapped for Sonar C/C++)
         run: |
           build-wrapper-linux-x86-64 --out-dir "${{ env.BUILD_WRAPPER_OUT_DIR }}" \
             cmake --build build -j"$(nproc)"
 
-      # === Tests & coverage (your originals) ===
       - name: Test
         run: |
           ctest --test-dir build --output-on-failure
 
-      - name: Coverage target
+      # Your CMake coverage target should respect $GCOV (set to gcov-15)
+      # and produce build/sonarqube-coverage.xml as per sonar-project.properties
+      - name: Coverage
         run: |
           cmake --build build --target coverage
 
-      # === Sonar scan (no args needed; uses sonar-project.properties) ===
+      # Scanner will use sonar-project.properties in repo root
+      # (sonar.host.url, organization, projectKey, coverageReportPaths, etc.)
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          # If not set org-wide, also provide:
+          # If not configured org-wide, uncomment the next line:
           # SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
