@@ -1,42 +1,60 @@
-name: Build
+name: SonarQube
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
     types: [opened, synchronize, reopened]
-env:
-  CLANG_VERSION: 18
+
 jobs:
   build:
-    name: Build
-    runs-on: gcc:15
+    name: Build and analyze
+    runs-on: ubuntu-latest
+    env:
+      BUILD_WRAPPER_OUT_DIR: build/bw-output  # matches sonar-project.properties
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
-      - name: Install CMake (Debian repo)
+          fetch-depth: 0
+
+      # Optional: ensure required tools exist on GitHub-hosted runners
+      - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build
-          cmake --version
-      - name: Generate compilation database and build
+          sudo apt-get install -y ninja-build lcov gcovr
+
+      - name: Install Sonar Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
+
+      # === Configure (kept from your flow) ===
+      - name: Configure CMake (Debug, Ninja, gcc-15)
         run: |
-          env
-          mkdir build
+          rm -rf build "${{ env.BUILD_WRAPPER_OUT_DIR }}"
           cmake -S . -B build -G Ninja \
-          -DCMAKE_CXX_COMPILER=gcc-15 \
-          -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=gcc-scan-deps-15 \
+            -DCMAKE_CXX_COMPILER=gcc-15 \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=gcc-scan-deps-15
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
-          cmake --build build -j \
-          ctest --test-dir build --output-on-failure \
-          cmake --build build --target coverage sonar_scan
-#      - name: SonarQube Scan
-#        uses: SonarSource/sonarqube-scan-action@v4
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }} # Put the name of your token here
-#        with:
-#          # Set the property "sonar.cfamily.compile-commands" to the compilation database file
-#          args: >
-#            --define sonar.cfamily.compile-commands=build/compile_commands.json
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # === Wrap only the compile ===
+      - name: Build (wrapped for Sonar C/C++)
+        run: |
+          build-wrapper-linux-x86-64 --out-dir "${{ env.BUILD_WRAPPER_OUT_DIR }}" \
+            cmake --build build -j"$(nproc)"
+
+      # === Tests & coverage (your originals) ===
+      - name: Test
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Coverage target
+        run: |
+          cmake --build build --target coverage
+
+      # === Sonar scan (no args needed; uses sonar-project.properties) ===
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # If not set org-wide, also provide:
+          # SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
