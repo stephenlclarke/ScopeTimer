@@ -154,45 +154,52 @@ namespace xyzzy::scopetimer {
 
             LabelData() = default;
 
-            explicit LabelData(std::string_view v) noexcept
-                : view(v.empty() ? std::string_view("ScopeTimer") : v) {}
+            explicit LabelData(std::string_view v, std::string&& owned = {}) noexcept
+                : storage(std::move(owned)),
+                  view("ScopeTimer") {
+                if (!storage.empty()) {
+                    view = storage;
+                } else if (!v.empty()) {
+                    view = v;
+                }
+            }
         };
 
-        struct LabelArg {
+        class LabelArg {
+        public:
             LabelArg() = default;
 
             template <std::size_t N>
             explicit LabelArg(const char (&literal)[N]) noexcept
-                : view_(std::string_view(literal, N ? N - 1 : 0)) {}
+                : storage_(literal, N ? N - 1 : 0) {}
 
             explicit LabelArg(const char* s) noexcept
-                : view_(s && *s ? std::string_view{s} : std::string_view{"ScopeTimer"}) {}
-
-            explicit LabelArg(const std::string& s)
-                : storage_(s), view_(storage_) {}
-
-            explicit LabelArg(std::string&& s) noexcept
-                : storage_(std::move(s)), view_(storage_) {}
+                : storage_(s && *s ? std::string_view{s} : std::string_view{"ScopeTimer"}) {}
 
             explicit LabelArg(std::string_view sv)
-                : storage_(sv), view_(storage_) {}
+                : storage_(sv) {}
+
+            explicit LabelArg(const std::string& s)
+                : owned_(s) {
+                ownsStorage_ = true;
+            }
+
+            explicit LabelArg(std::string&& s) noexcept
+                : owned_(std::move(s)) {
+                ownsStorage_ = true;
+            }
 
             LabelData toLabelData() && noexcept {
-                LabelData data;
-                if (!storage_.empty()) {
-                    data.storage = std::move(storage_);
-                    data.view = data.storage;
-                } else if (!view_.empty()) {
-                    data.view = view_;
-                } else {
-                    data.view = "ScopeTimer";
+                if (ownsStorage_) {
+                    return LabelData(std::string_view{}, std::move(owned_));
                 }
-                return data;
+                return LabelData(storage_);
             }
 
         private:
-            std::string storage_;
-            std::string_view view_{ "ScopeTimer" };
+            std::string_view storage_{ "ScopeTimer" };
+            std::string owned_;
+            bool ownsStorage_{ false };
         };
     } // namespace detail
 

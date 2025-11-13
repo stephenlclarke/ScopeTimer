@@ -40,6 +40,7 @@ public:
         test_labelarg_literal_and_pointer_variants();
         test_labeldata_manual_empty_view();
         test_labelarg_empty_literal_to_labeldata();
+        test_labelarg_owned_to_labeldata();
         test_scope_timer_string_view_ctor();
         test_looped_work();
         test_threaded();
@@ -262,6 +263,14 @@ private:
         expect(data.storage.empty(), "LabelArg empty literal does not allocate storage");
     }
 
+    static void test_labelarg_owned_to_labeldata() {
+        std::string ownedSource = "tests:label:owned";
+        ::xyzzy::scopetimer::detail::LabelArg arg{std::move(ownedSource)};
+        auto data = std::move(arg).toLabelData();
+        expect(data.storage == "tests:label:owned", "LabelArg owned string moves storage");
+        expect(data.view == data.storage, "LabelArg owned string view references storage");
+    }
+
     static void test_scope_timer_string_view_ctor() {
         std::string_view svLabel = "tests:label:ctor_sv";
         ::xyzzy::scopetimer::ScopeTimer timer("tests:label:ctor_scope", svLabel);
@@ -284,7 +293,7 @@ private:
 
         std::string_view sv = "tests:label:sv";
         verifyLabelResult("std::string_view copy", "tests:label:sv",
-                          true, ::xyzzy::scopetimer::detail::LabelArg{sv});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{sv});
     }
 
     static void test_labelarg_literal_and_pointer_variants() {
