@@ -155,12 +155,13 @@ namespace xyzzy::scopetimer {
             LabelData() = default;
 
             explicit LabelData(std::string_view v, std::string&& owned = {}) noexcept
-                : storage(std::move(owned)),
-                  view("ScopeTimer") {
+                : storage(std::move(owned)) {
                 if (!storage.empty()) {
                     view = storage;
                 } else if (!v.empty()) {
                     view = v;
+                } else {
+                    view = "ScopeTimer";
                 }
             }
         };
@@ -180,14 +181,12 @@ namespace xyzzy::scopetimer {
                 : storage_(sv) {}
 
             explicit LabelArg(const std::string& s)
-                : owned_(s) {
-                ownsStorage_ = true;
-            }
+                : owned_(s),
+                  ownsStorage_(true) {}
 
             explicit LabelArg(std::string&& s) noexcept
-                : owned_(std::move(s)) {
-                ownsStorage_ = true;
-            }
+                : owned_(std::move(s)),
+                  ownsStorage_(true) {}
 
             LabelData toLabelData() && noexcept {
                 if (ownsStorage_) {
