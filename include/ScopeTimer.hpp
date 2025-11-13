@@ -540,23 +540,38 @@ namespace xyzzy::scopetimer {
             getFormatter()(ns, out, outSz);
         }
 
+        /**
+         * @brief Per-thread scratch space for formatted end/elapsed timestamps.
+         */
         struct FormatBuffers {
             char endBuf[32];
             char elapsedBuf[32];
         };
 
+        /**
+         * @brief Returns the thread-local formatting scratch space.
+         */
         static inline FormatBuffers& formatBuffers() noexcept {
             return tlsFormatBuffers_;
         }
 
+        /**
+         * @brief Helper used by tests to ensure format buffers are reused.
+         */
         static inline const char* endBufferAddressForTests() noexcept {
             return formatBuffers().endBuf;
         }
 
+        /**
+         * @brief Per-thread assembly buffer for the full log line.
+         */
         struct LineBuffer {
             char data[512];
         };
 
+        /**
+         * @brief Accessor for the thread-local line assembly buffer.
+         */
         static inline LineBuffer& lineBuffer() noexcept {
             return tlsLineBuffer_;
         }
@@ -612,6 +627,9 @@ namespace xyzzy::scopetimer {
         static inline std::string logDirCache_{"/tmp/"};
         static inline bool logDirInitialized_{false};
 
+        /**
+         * @brief Opens the default log file descriptor on first use (best-effort).
+         */
         static inline bool ensureLogFdOpen() noexcept {
             int& fd = logFd();
             if (fd >= 0) {
@@ -640,6 +658,9 @@ namespace xyzzy::scopetimer {
             return false;
         }
 
+        /**
+         * @brief Registers the atexit handler that closes the log descriptor.
+         */
         static inline void registerLogFdCleanup() noexcept {
             static bool registered = false;
             if (!registered) {
@@ -650,11 +671,17 @@ namespace xyzzy::scopetimer {
             }
         }
 
+        /**
+         * @brief Singleton storage for the log descriptor.
+         */
+        static inline int logFdStorage_{-1};
         static inline int& logFd() noexcept {
-            static int fd = -1;
-            return fd;
+            return logFdStorage_;
         }
 
+        /**
+         * @brief Resets the log descriptor so it will be reopened on demand.
+         */
         static inline void closeLogFd() noexcept {
             int& fd = logFd();
             if (fd >= 0) {
@@ -663,10 +690,16 @@ namespace xyzzy::scopetimer {
             }
         }
 
+        /**
+         * @brief Test-only accessor to observe the current log descriptor.
+         */
         static inline int defaultLogFdForTests() noexcept {
             return logFd();
         }
 
+        /**
+         * @brief Test-only helper that forces the log descriptor closed.
+         */
         static inline void closeLogFdForTests() noexcept {
             closeLogFd();
         }
@@ -820,24 +853,28 @@ namespace xyzzy::scopetimer {
 
 } // namespace xyzzy::scopetimer
 
-// Back-compatibility alias so existing code that referenced ::ewm::scopetimer keeps working.
-namespace ewm {
-    namespace scopetimer = ::xyzzy::scopetimer;
-}
-
 inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, std::size_t len) noexcept {
+    // Fast path: nothing to write.
     if (len == 0) {
         return;
     }
-    if (!ensureLogFdOpen()) {
-        return;
-    }
+
     int fd = logFd();
     if (fd < 0) {
-        return;
+        // Attempt to open/create the log file lazily; if that fails we silently drop the line.
+        if (!ensureLogFdOpen()) {
+            return;
+        }
+        fd = logFd();
+        if (fd < 0) {
+            return;
+        }
     }
-    ssize_t unused = ::write(fd, data, len);
-    (void)unused;
+
+    // write(2) can legitimately return fewer bytes than requested. Since ScopeTimer logging is
+    // best-effort, we intentionally ignore the return code — we never want to throw or retry from here.
+    ssize_t unused = ::write(fd, data, len); 
+    (void)unused; // Explicitly mark the variable as "intentionally unused"
 }
 
 inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {

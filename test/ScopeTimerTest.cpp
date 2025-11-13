@@ -45,6 +45,9 @@ public:
         test_log_directory_caching();
         test_memory_sink_captures_output();
         test_memory_sink_without_flush();
+        test_default_sink_write_short_circuits();
+        test_ensure_log_fd_reuses_existing_handle();
+        test_default_sink_write_handles_closed_fd();
         test_threadlocal_format_buffers_reused();
         test_scope_timer_string_view_ctor();
         test_looped_work();
@@ -338,6 +341,57 @@ private:
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
         expect(sinkCaptureBuffer().find("tests:memory_sink_no_flush") != std::string::npos,
                "custom log sink without flush still captures output");
+    }
+
+    static void test_default_sink_write_short_circuits() {
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr); // ensure default sink active
+        ::xyzzy::scopetimer::ScopeTimer::defaultSinkWrite("ignored", 0);
+
+        std::string bogus = "/tmp/scopetimer_default_sink_" + std::to_string(::getpid());
+        ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(bogus);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+
+        ::xyzzy::scopetimer::ScopeTimer::defaultSinkWrite("abc", 3);
+        expect(::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1,
+               "default sink write leaves fd closed when directory invalid");
+
+        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+    }
+
+    static void test_ensure_log_fd_reuses_existing_handle() {
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+
+        bool opened = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
+        expect(opened, "ensureLogFdOpen opens fd for valid directory");
+        int fd = ::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests();
+        expect(fd >= 0, "default sink exposes opened fd");
+
+        bool reused = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
+        expect(reused, "ensureLogFdOpen returns true when fd already open");
+        expect(::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == fd,
+               "ensureLogFdOpen leaves existing fd untouched");
+
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+    }
+
+    static void test_default_sink_write_handles_closed_fd() {
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        std::string bogus = "/tmp/scopetimer_default_sink_fail_" + std::to_string(::getpid());
+        ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(bogus);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+
+        ::xyzzy::scopetimer::ScopeTimer::defaultSinkWrite("xyz", 3);
+        expect(::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1,
+               "defaultSinkWrite returns quickly when fd cannot open");
+
+        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
     }
 
     static void test_scope_timer_string_view_ctor() {
