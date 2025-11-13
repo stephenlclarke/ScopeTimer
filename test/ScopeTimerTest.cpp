@@ -40,6 +40,7 @@ public:
         test_labelarg_literal_and_pointer_variants();
         test_labeldata_manual_empty_view();
         test_labelarg_empty_literal_to_labeldata();
+        test_labeldata_constructor_default_view();
         test_labelarg_owned_to_labeldata();
         test_scope_timer_string_view_ctor();
         test_looped_work();
@@ -261,6 +262,12 @@ private:
         auto data = std::move(arg).toLabelData();
         expect(data.view == std::string_view("ScopeTimer"), "LabelArg empty literal defaults to ScopeTimer");
         expect(data.storage.empty(), "LabelArg empty literal does not allocate storage");
+    }
+
+    static void test_labeldata_constructor_default_view() {
+        ::xyzzy::scopetimer::detail::LabelData data(std::string_view{});
+        expect(data.view == std::string_view("ScopeTimer"), "LabelData ctor defaults empty inputs to ScopeTimer");
+        expect(data.storage.empty(), "LabelData ctor leaves storage empty when no ownership provided");
     }
 
     static void test_labelarg_owned_to_labeldata() {
