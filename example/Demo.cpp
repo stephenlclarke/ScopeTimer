@@ -22,7 +22,9 @@
  */
 
 #include "ScopeTimer.hpp"
+#include <algorithm>
 #include <chrono>
+#include <iostream>
 #include <thread>
 #include <vector>
 #include <functional>
@@ -59,9 +61,11 @@ static void nestedScopes() {
 // Example 3: Multiple timers in the same scope (demonstrates unique macro var names)
 static void multipleTimersSameScope() {
     SCOPE_TIMER("multi:first");
-    busyFor(700us);
+    busyFor(600us);
     SCOPE_TIMER("multi:second");
-    busyFor(800us);
+    busyFor(700us);
+    SCOPE_TIMER("multi:third"); busyFor(800us); SCOPE_TIMER("multi:fourth");
+    busyFor(900us);
 }
 
 // Example 4: Conditional timing (only enabled when condition is true)
@@ -148,41 +152,54 @@ private:
     ::xyzzy::scopetimer::ScopeTimer lifetimeTimer_{"LifetimeTracked"};
 };
 
-int main() {
-    // track the lifetime of the main method. (not using a label parameter)
-    SCOPE_TIMER();
+static void runDemoSuite(int intensity) {
+    SCOPE_TIMER("Demo::runDemoSuite");
 
-    // Basic single-scope timer
     simpleWork();
-
-    // Nested timers demonstrate start/end/elapsed for parent and child scopes
     nestedScopes();
-
-    // Two timers in the same lexical scope - proves global uniqueness via __COUNTER__
     multipleTimersSameScope();
-
-    // Conditional timing off
     conditionalWork(false);
-    // Conditional timing on
     conditionalWork(true);
-
-    // Loop with per-iteration timer plus an overall total timer
-    loopedWork(5);
-
-    // Multithreaded example with 3 workers
-    threadedWork(3);
-
-    // Demonstrate using timers inside a class
+    loopedWork(5 * intensity);
+    threadedWork(std::clamp(intensity, 1, 8));
     Worker w;
-    w.doTask("Worker:singleTask");
-    w.doMultipleTasks(3, true);
-    w.doMultipleTasks(2, false);
-
-    // LifetimeTracked object: timer runs for entire lifetime of the object
+    for (int i = 0; i < intensity; ++i) {
+        w.doTask("Worker:singleTask");
+    }
+    w.doMultipleTasks(3 * intensity, true);
+    w.doMultipleTasks(2 * intensity, false);
     {
         LifetimeTracked obj;
-        busyFor(1500us); // simulate doing things with obj
+        busyFor(1500us);
     }
+}
 
+static int parseIterations(int argc, char** argv) {
+    SCOPE_TIMER("Demo::parseIterations");
+
+    int iterations = 1;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: Demo [--iterations=N]\n"
+                         "When --iterations > 1 the demo repeats the workload N times\n"
+                         "and scales per-scope loops so it can be used for benchmarking.\n";
+            std::exit(0);
+        } else if (arg.rfind("--iterations=", 0) == 0) {
+            iterations = std::max(1, std::stoi(arg.substr(13)));
+        } else {
+            iterations = std::max(1, std::stoi(arg));
+        }
+    }
+    return iterations;
+}
+
+int main(int argc, char** argv) {
+    SCOPE_TIMER("Demo::main");
+
+    const int iterations = parseIterations(argc, argv);
+    for (int i = 0; i < iterations; ++i) {
+        runDemoSuite(iterations);
+    }
     return 0;
 }
