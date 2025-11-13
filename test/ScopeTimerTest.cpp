@@ -37,6 +37,7 @@ public:
         test_empty_label();
         test_seconds_format_branch();
         test_fmt_auto_seconds_branch();
+        test_fmt_auto_nanos_branch();
         test_finalize_snprintf_result_branches();
         test_disabled_via_env_child_process();
         test_disabled_case_insensitivity_child_process();
@@ -44,6 +45,7 @@ public:
         test_flushN_variants_child_process();
         test_logdir_edge_cases_child_process();
         test_logfile_null_branch();
+        test_logfile_failure_cache_branch();
 
         if (s_failures == 0) {
             std::fprintf(stdout, "All ScopeTimer tests passed.\n");
@@ -260,6 +262,19 @@ private:
         expect(out.find('s') != std::string::npos,   "fmtAuto(seconds): seconds unit present");
     }
 
+    static void test_fmt_auto_nanos_branch() {
+        char buf[64];
+        long long ns = 500; // < 1000 ns triggers fmtNanos
+        for (auto &c : buf) c = '\0';
+        ewm::scopetimer::ScopeTimer::fmtAuto(ns, buf, sizeof(buf));
+        const std::string out(buf);
+        expect(out.find("ns") != std::string::npos, "fmtAuto(nanos): nanoseconds unit present");
+        expect(out.find("us") == std::string::npos, "fmtAuto(nanos): not microseconds");
+        expect(out.find("ms") == std::string::npos, "fmtAuto(nanos): not milliseconds");
+        expect(out.find('s') == std::string::npos || out.find("ns") != std::string::npos,
+               "fmtAuto(nanos): no plain seconds suffix");
+    }
+
     static void test_finalize_snprintf_result_branches() {
         using ewm::scopetimer::ScopeTimerDetail::finalize_snprintf_result;
         {
@@ -386,6 +401,25 @@ private:
         std::string logfile = bogus + "/scopetimer.log";
         int file_rc = ::stat(logfile.c_str(), &st);
         expect(file_rc != 0, "logFile() null branch: no logfile created when dir invalid");
+    }
+
+    static void test_logfile_failure_cache_branch() {
+        FILE*& handle = ScopeTimer::fileHandle();
+        if (handle) {
+            std::fflush(handle);
+            std::fclose(handle);
+            handle = nullptr;
+        }
+
+        std::string bogus = "/tmp/scopetimer_cached_fail_" + std::to_string(::getpid()) + "_dir";
+        ::rmdir(bogus.c_str()); // ensure the directory does not exist; ignore failure
+        ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
+        FILE* first = ScopeTimer::logFile();
+        expect(first == nullptr, "logFile() returns nullptr for invalid directory");
+        FILE* second = ScopeTimer::logFile();
+        expect(second == nullptr, "logFile() cached failed path and skipped retry");
+        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
+        // Leave handle null so later tests reopen lazily under /tmp
     }
 
     // --------- bootstrapping helpers ---------

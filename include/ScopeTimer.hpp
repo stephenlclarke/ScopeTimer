@@ -173,6 +173,7 @@ namespace ewm::scopetimer {
             threadNum_ = getThreadIdNumber();
             startSteady_ = std::chrono::steady_clock::now();
             startWall_ = std::chrono::system_clock::now();
+            formatTime(startWall_, startWallFormatted_, sizeof(startWallFormatted_));
         }
 
         ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
@@ -194,11 +195,9 @@ namespace ewm::scopetimer {
             const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endSteady - startSteady_).count();
 
             // Fixed-size stack buffers (no heap)
-            char startBuf[32];
             char endBuf[32];
             char elapsedBuf[32];
 
-            formatTime(startWall_, startBuf, sizeof(startBuf));
             formatTime(endWall,    endBuf,   sizeof(endBuf));
             formatElapsed(elapsedNs, elapsedBuf, sizeof(elapsedBuf));
 
@@ -212,7 +211,7 @@ namespace ewm::scopetimer {
                 static_cast<int>(label_.size()), label_.data(),
                 threadNum_,
                 static_cast<int>(where_.size()), where_.data(),
-                startBuf,
+                startWallFormatted_,
                 endBuf,
                 elapsedBuf
             );
@@ -539,6 +538,8 @@ namespace ewm::scopetimer {
          * - startWall_: Used for logging human-readable absolute start times for contextual information.
          * This dual tracking ensures logs contain meaningful wall times while preserving accurate duration measurements.
          */
+        static constexpr std::size_t TimestampBufSize = 32;
+
         std::chrono::steady_clock::time_point startSteady_; ///< Start time for high-resolution elapsed duration.
 
         /**
@@ -549,6 +550,7 @@ namespace ewm::scopetimer {
          * startWall_ captures the actual wall clock time for contextual/logging purposes.
          */
         std::chrono::system_clock::time_point startWall_;
+        char startWallFormatted_[TimestampBufSize]{};
 
         /**
          * @brief Indicates if this timer instance is disabled.
