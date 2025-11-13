@@ -148,9 +148,22 @@ private:
     }
 
     static void test_simple_scope() {
-        SCOPE_TIMER("tests:simple_scope");
-        busyFor(50us);
-        expect(true, "simple scope executed");
+        // These log assertions hit the real filesystem because ScopeTimer's contract is to
+        // append plain-text entries; parsing the actual log exercises the same path end users get.
+        const std::string logDir = "/tmp";
+        const std::string logPath = logDir + "/ScopeTimer.log";
+        std::remove(logPath.c_str());
+        ::setenv("SCOPE_TIMER_DIR", logDir.c_str(), 1);
+        ::setenv("SCOPE_TIMER_FLUSH_N", "1", 1);
+
+        {
+            SCOPE_TIMER("tests:simple_scope");
+            busyFor(2000us);
+        }
+
+        double elapsedMs = readElapsedMillisFromLog(logPath, "tests:simple_scope");
+        expect(elapsedMs >= 2.0, "simple scope emitted log entry with elapsed >= 2ms");
+        std::remove(logPath.c_str());
     }
 
     static void test_nested_scopes() {
