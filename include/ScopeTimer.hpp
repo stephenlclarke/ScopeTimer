@@ -383,11 +383,40 @@ namespace xyzzy::scopetimer {
          *
          * Controlled solely by SCOPE_TIMER_DIR; defaults to /tmp when unset/empty.
          */
-        static inline std::string logDirectory() {
-            if (const char* primary = std::getenv("SCOPE_TIMER_DIR"); primary && *primary) {
-                return std::string(primary);
+        static inline const std::string& logDirectory() {
+            static std::string cachedDir = [] {
+                std::string dir;
+                if (const char* primary = std::getenv("SCOPE_TIMER_DIR"); primary && *primary) {
+                    dir = primary;
+                }
+                if (dir.empty()) {
+                    dir = "/tmp";
+                }
+                if (!dir.empty() && dir.back() != '/') {
+                    dir.push_back('/');
+                }
+                return dir;
+            }();
+            return cachedDir;
+        }
+
+        static inline void resetLogDirectoryForTests(std::string_view newDir = {}) {
+            std::string normalized;
+            if (!newDir.empty()) {
+                normalized.assign(newDir.begin(), newDir.end());
+            } else {
+                if (const char* primary = std::getenv("SCOPE_TIMER_DIR"); primary && *primary) {
+                    normalized = primary;
+                }
             }
-            return std::string("/tmp");
+            if (normalized.empty()) {
+                normalized = "/tmp";
+            }
+            if (!normalized.empty() && normalized.back() != '/') {
+                normalized.push_back('/');
+            }
+            auto& cached = const_cast<std::string&>(logDirectory());
+            cached = std::move(normalized);
         }
 
         /**
@@ -409,13 +438,7 @@ namespace xyzzy::scopetimer {
             static bool lastAttemptFailed = false;
 
             // Singleton FILE* with large user buffer for high-throughput buffered IO
-            std::string dir = logDirectory();
-
-            if(!dir.empty() && dir.back() != '/') {
-                dir.push_back('/');
-            }
-
-            std::string path = dir + "ScopeTimer.log";
+            const std::string path = logDirectory() + "ScopeTimer.log";
 
             if (lastAttemptFailed && path == lastFailedPath) {
                 return nullptr;

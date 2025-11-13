@@ -42,6 +42,7 @@ public:
         test_labelarg_empty_literal_to_labeldata();
         test_labeldata_constructor_default_view();
         test_labelarg_owned_to_labeldata();
+        test_log_directory_caching();
         test_scope_timer_string_view_ctor();
         test_looped_work();
         test_threaded();
@@ -276,6 +277,20 @@ private:
         auto data = std::move(arg).toLabelData();
         expect(data.storage == "tests:label:owned", "LabelArg owned string moves storage");
         expect(data.view == data.storage, "LabelArg owned string view references storage");
+    }
+
+    static void test_log_directory_caching() {
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp/cached_dir");
+        const std::string& first = ::xyzzy::scopetimer::ScopeTimer::logDirectory();
+        expect(first == "/tmp/cached_dir/", "logDirectory uses test override with trailing slash");
+
+        ::setenv("SCOPE_TIMER_DIR", "/tmp/ignored_change", 1);
+        const std::string& second = ::xyzzy::scopetimer::ScopeTimer::logDirectory();
+        expect(&first == &second, "logDirectory returns same cached reference after override");
+        expect(second == "/tmp/cached_dir/", "logDirectory ignores env changes after override");
+
+        ::unsetenv("SCOPE_TIMER_DIR");
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
     }
 
     static void test_scope_timer_string_view_ctor() {
@@ -572,7 +587,7 @@ private:
             std::fclose(handle);
             handle = nullptr;
         }
-
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
         std::string bogus = "/tmp/scopetimer_cached_fail_" + std::to_string(::getpid()) + "_dir";
         ::rmdir(bogus.c_str()); // ensure the directory does not exist; ignore failure
         ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
@@ -581,6 +596,7 @@ private:
         FILE* second = ScopeTimer::logFile();
         expect(second == nullptr, "logFile() cached failed path and skipped retry");
         ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
         // Leave handle null so later tests reopen lazily under /tmp
     }
 
