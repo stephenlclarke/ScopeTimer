@@ -256,12 +256,9 @@ namespace xyzzy::scopetimer {
             const auto endWall   = std::chrono::system_clock::now();
             const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endSteady - startSteady_).count();
 
-            // Fixed-size stack buffers (no heap)
-            char endBuf[32];
-            char elapsedBuf[32];
-
-            formatTime(endWall,    endBuf,   sizeof(endBuf));
-            formatElapsed(elapsedNs, elapsedBuf, sizeof(elapsedBuf));
+            auto& fmtBufs = formatBuffers();
+            formatTime(endWall, fmtBufs.endBuf, sizeof(fmtBufs.endBuf));
+            formatElapsed(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf));
 
             // Final line buffer
             char line[512];
@@ -274,8 +271,8 @@ namespace xyzzy::scopetimer {
                 threadNum_,
                 static_cast<int>(where_.size()), where_.data(),
                 startWallFormatted_,
-                endBuf,
-                elapsedBuf
+                fmtBufs.endBuf,
+                fmtBufs.elapsedBuf
             );
 
             // Convert snprintf result to a safe byte count
@@ -384,20 +381,11 @@ namespace xyzzy::scopetimer {
          * Controlled solely by SCOPE_TIMER_DIR; defaults to /tmp when unset/empty.
          */
         static inline const std::string& logDirectory() {
-            static std::string cachedDir = [] {
-                std::string dir;
-                if (const char* primary = std::getenv("SCOPE_TIMER_DIR"); primary && *primary) {
-                    dir = primary;
-                }
-                if (dir.empty()) {
-                    dir = "/tmp";
-                }
-                if (!dir.empty() && dir.back() != '/') {
-                    dir.push_back('/');
-                }
-                return dir;
-            }();
-            return cachedDir;
+            if (!logDirInitialized_) {
+                resetLogDirectoryForTests();
+                logDirInitialized_ = true;
+            }
+            return logDirCache_;
         }
 
         static inline void resetLogDirectoryForTests(std::string_view newDir = {}) {
@@ -415,8 +403,8 @@ namespace xyzzy::scopetimer {
             if (!normalized.empty() && normalized.back() != '/') {
                 normalized.push_back('/');
             }
-            auto& cached = const_cast<std::string&>(logDirectory());
-            cached = std::move(normalized);
+            logDirCache_ = std::move(normalized);
+            logDirInitialized_ = true;
         }
 
         /**
@@ -613,6 +601,19 @@ namespace xyzzy::scopetimer {
             getFormatter()(ns, out, outSz);
         }
 
+        struct FormatBuffers {
+            char endBuf[32];
+            char elapsedBuf[32];
+        };
+
+        static inline FormatBuffers& formatBuffers() noexcept {
+            return tlsFormatBuffers_;
+        }
+
+        static inline const char* endBufferAddressForTests() noexcept {
+            return formatBuffers().endBuf;
+        }
+
         inline void assignLabel(detail::LabelData&& data) noexcept {
             if (!data.storage.empty()) {
                 labelStorage_ = std::move(data.storage);
@@ -628,6 +629,10 @@ namespace xyzzy::scopetimer {
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
         std::string labelStorage_; ///< Owns label storage when provided via temporaries.
         uint32_t threadNum_; ///< Unique thread ID number.
+
+        static inline thread_local FormatBuffers tlsFormatBuffers_{};
+        static inline std::string logDirCache_{"/tmp/"};
+        static inline bool logDirInitialized_{false};
 
         /**
          * I store both a steady_clock (startSteady_) and a system_clock (startWall_) timestamp:

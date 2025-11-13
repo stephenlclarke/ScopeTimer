@@ -43,6 +43,7 @@ public:
         test_labeldata_constructor_default_view();
         test_labelarg_owned_to_labeldata();
         test_log_directory_caching();
+        test_threadlocal_format_buffers_reused();
         test_scope_timer_string_view_ctor();
         test_looped_work();
         test_threaded();
@@ -291,6 +292,12 @@ private:
 
         ::unsetenv("SCOPE_TIMER_DIR");
         ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
+    }
+
+    static void test_threadlocal_format_buffers_reused() {
+        const char* first = ::xyzzy::scopetimer::ScopeTimer::endBufferAddressForTests();
+        const char* second = ::xyzzy::scopetimer::ScopeTimer::endBufferAddressForTests();
+        expect(first == second, "thread-local format buffers reuse the same memory per thread");
     }
 
     static void test_scope_timer_string_view_ctor() {
