@@ -157,7 +157,7 @@ public:
     LifetimeTracked() : lifetimeTimer_("LifetimeTracked") { /* setup */ }
     ~LifetimeTracked() { /* teardown */ }
 private:
-    ::ewm::scopetimer::ScopeTimer lifetimeTimer_;
+    ::xyzzy::scopetimer::ScopeTimer lifetimeTimer_;
 };
 ```
 
@@ -593,69 +593,69 @@ Overwritten path diagnostic targets: 0
 ```bash
 ❯ scripts/process_scope_times.sh ./ScopeTimer.log | scripts/summarize_scope_times.sh
 ===== Summary (count / min / avg / max) =====
-[tests:child:probe]static int ewm::scopetimer::ScopeTimer_TestFriend::child_probe_main_if_requested()
+[tests:child:probe]static int xyzzy::scopetimer::ScopeTimer_TestFriend::child_probe_main_if_requested()
   count=9  min=131us  avg=134us  max=139us  -
 
-[tests:simple_scope]static void ewm::scopetimer::ScopeTimer_TestFriend::test_simple_scope()
+[tests:simple_scope]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_simple_scope()
   count=1  min=72us  avg=72us  max=72us  -
 
-[tests:nested:inner1]static void ewm::scopetimer::ScopeTimer_TestFriend::test_nested_scopes()
+[tests:nested:inner1]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_nested_scopes()
   count=1  min=21us  avg=21us  max=21us  -
 
-[tests:nested:inner2]static void ewm::scopetimer::ScopeTimer_TestFriend::test_nested_scopes()
+[tests:nested:inner2]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_nested_scopes()
   count=1  min=28us  avg=28us  max=28us  -
 
-[tests:nested:outer]static void ewm::scopetimer::ScopeTimer_TestFriend::test_nested_scopes()
+[tests:nested:outer]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_nested_scopes()
   count=1  min=74us  avg=74us  max=74us  -
 
-[tests:looped:iter]static void ewm::scopetimer::ScopeTimer_TestFriend::test_looped_work()
+[tests:looped:iter]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_looped_work()
   count=3  min=9us  avg=9us  max=9us  -
 
-[tests:looped:total]static void ewm::scopetimer::ScopeTimer_TestFriend::test_looped_work()
+[tests:looped:total]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_looped_work()
   count=1  min=31us  avg=31us  max=31us  -
 
-[tests:threaded:worker]ewm::scopetimer::ScopeTimer_TestFriend::test_threaded()::<lambda()>
+[tests:threaded:worker]xyzzy::scopetimer::ScopeTimer_TestFriend::test_threaded()::<lambda()>
   count=2  min=17us  avg=20us  max=23us  -
 
-[tests:threaded:total]static void ewm::scopetimer::ScopeTimer_TestFriend::test_threaded()
+[tests:threaded:total]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_threaded()
   count=1  min=96us  avg=96us  max=96us  -
 
-[tests:format:micros]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
+[tests:format:micros]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
   count=1  min=6us  avg=6us  max=6us  -
 
-[tests:format:millis]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
+[tests:format:millis]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
   count=1  min=6us  avg=6us  max=6us  -
 
-[tests:format:seconds]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
+[tests:format:seconds]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
   count=1  min=5us  avg=5us  max=5us  -
 
-[tests:format:nanos]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
+[tests:format:nanos]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
   count=1  min=4us  avg=4us  max=4us  -
 
-[tests:format:bogus]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
+[tests:format:bogus]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_variants()
   count=1  min=7us  avg=7us  max=7us  -
 
-[tests:format:unset]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_unset_and_empty()
+[tests:format:unset]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_unset_and_empty()
   count=1  min=5us  avg=5us  max=5us  -
 
-[tests:format:empty]static void ewm::scopetimer::ScopeTimer_TestFriend::test_env_format_unset_and_empty()
+[tests:format:empty]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_env_format_unset_and_empty()
   count=1  min=4us  avg=4us  max=4us  -
 
-[]static void ewm::scopetimer::ScopeTimer_TestFriend::test_empty_label()
+[]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_empty_label()
   count=1  min=4us  avg=4us  max=4us  -
 
-[tests:format:seconds:short]static void ewm::scopetimer::ScopeTimer_TestFriend::test_seconds_format_branch()
+[tests:format:seconds:short]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_seconds_format_branch()
   count=1  min=1.386ms  avg=1.386ms  max=1.386ms  -
 
-[tests:format:seconds:long]static void ewm::scopetimer::ScopeTimer_TestFriend::test_seconds_format_branch()
+[tests:format:seconds:long]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_seconds_format_branch()
   count=1  min=12.508ms  avg=12.508ms  max=12.508ms  -
 
-[tests:logfile_null_branch]static void ewm::scopetimer::ScopeTimer_TestFriend::test_logfile_null_branch()
+[tests:logfile_null_branch]static void xyzzy::scopetimer::ScopeTimer_TestFriend::test_logfile_null_branch()
   count=1  min=71us  avg=71us  max=71us  -
 ```
 
 ---
 
-© 2025 Steve Clarke · Released under the [AGPL-3.0 License](https://www.gnu.org/licenses/agpl-3.0.html)
+© 2025 Steve Clarke · https://xyzzy.tools · Released under the [AGPL-3.0 License](https://www.gnu.org/licenses/agpl-3.0.html)
 
 ---

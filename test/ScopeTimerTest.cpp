@@ -18,7 +18,7 @@ using namespace std::chrono_literals;
 // All unit tests are now methods of a class that can be declared as a
 // friend inside ScopeTimer.hpp (e.g., `friend class ScopeTimer_TestFriend;`).
 // We DO NOT modify ScopeTimer.hpp here.
-namespace ewm { namespace scopetimer {
+namespace xyzzy { namespace scopetimer {
 
 class ScopeTimer_TestFriend {
 public:
@@ -79,8 +79,8 @@ private:
         std::this_thread::sleep_for(us);
     }
 
-    static void verifyLabelResult(const char* scenario, std::string_view expected, bool expectOwned, ::ewm::scopetimer::detail::LabelArg arg) {
-        ::ewm::scopetimer::ScopeTimer timer("tests:label:probe", std::move(arg).toLabelData());
+    static void verifyLabelResult(const char* scenario, std::string_view expected, bool expectOwned, ::xyzzy::scopetimer::detail::LabelArg arg) {
+        ::xyzzy::scopetimer::ScopeTimer timer("tests:label:probe", std::move(arg).toLabelData());
         bool owned = !timer.labelStorage_.empty();
         std::string ownMsg = std::string(scenario) + " (ownership)";
         expect(owned == expectOwned, ownMsg.c_str());
@@ -247,16 +247,16 @@ private:
     }
 
     static void test_labeldata_manual_empty_view() {
-        ::ewm::scopetimer::detail::LabelData data;
+        ::xyzzy::scopetimer::detail::LabelData data;
         data.view = std::string_view{};
-        ::ewm::scopetimer::ScopeTimer timer("tests:labeldata:empty", std::move(data));
+        ::xyzzy::scopetimer::ScopeTimer timer("tests:labeldata:empty", std::move(data));
         expect(timer.label_ == std::string_view("ScopeTimer"), "LabelData empty view defaults to ScopeTimer");
         expect(timer.labelStorage_.empty(), "LabelData empty view does not allocate storage");
         timer.disabled_ = true;
     }
 
     static void test_labelarg_empty_literal_to_labeldata() {
-        ::ewm::scopetimer::detail::LabelArg arg{""};
+        ::xyzzy::scopetimer::detail::LabelArg arg{""};
         auto data = std::move(arg).toLabelData();
         expect(data.view == std::string_view("ScopeTimer"), "LabelArg empty literal defaults to ScopeTimer");
         expect(data.storage.empty(), "LabelArg empty literal does not allocate storage");
@@ -264,7 +264,7 @@ private:
 
     static void test_scope_timer_string_view_ctor() {
         std::string_view svLabel = "tests:label:ctor_sv";
-        ::ewm::scopetimer::ScopeTimer timer("tests:label:ctor_scope", svLabel);
+        ::xyzzy::scopetimer::ScopeTimer timer("tests:label:ctor_scope", svLabel);
         expect(timer.label_ == svLabel, "ScopeTimer string_view ctor copies label text");
         expect(timer.labelStorage_.empty(), "ScopeTimer string_view ctor reuses provided storage");
         timer.disabled_ = true;
@@ -272,42 +272,42 @@ private:
 
     static void test_labelarg_temporary_string() {
         verifyLabelResult("temporary std::string rvalue", "tests:label:temporary",
-                          true, ::ewm::scopetimer::detail::LabelArg{std::string("tests:label:temporary")});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{std::string("tests:label:temporary")});
 
         std::string lvalue = "tests:label:lvalue";
         verifyLabelResult("std::string lvalue copy", "tests:label:lvalue",
-                          true, ::ewm::scopetimer::detail::LabelArg{lvalue});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{lvalue});
 
         std::string moveSrc = "tests:label:moved";
         verifyLabelResult("std::string rvalue move", "tests:label:moved",
-                          true, ::ewm::scopetimer::detail::LabelArg{std::move(moveSrc)});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{std::move(moveSrc)});
 
         std::string_view sv = "tests:label:sv";
         verifyLabelResult("std::string_view copy", "tests:label:sv",
-                          true, ::ewm::scopetimer::detail::LabelArg{sv});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{sv});
     }
 
     static void test_labelarg_literal_and_pointer_variants() {
         verifyLabelResult("string literal", "tests:label:literal",
-                          false, ::ewm::scopetimer::detail::LabelArg{"tests:label:literal"});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{"tests:label:literal"});
 
         verifyLabelResult("string literal empty", "ScopeTimer",
-                          false, ::ewm::scopetimer::detail::LabelArg{""});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{""});
 
         const char* ptr = "tests:label:ptr";
         verifyLabelResult("const char* pointer", "tests:label:ptr",
-                          false, ::ewm::scopetimer::detail::LabelArg{ptr});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{ptr});
 
         const char* emptyPtr = "";
         verifyLabelResult("const char* empty string", "ScopeTimer",
-                          false, ::ewm::scopetimer::detail::LabelArg{emptyPtr});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{emptyPtr});
 
         const char* nullPtr = nullptr;
         verifyLabelResult("const char* null pointer", "ScopeTimer",
-                          false, ::ewm::scopetimer::detail::LabelArg{nullPtr});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{nullPtr});
 
         verifyLabelResult("default LabelArg", "ScopeTimer",
-                          false, ::ewm::scopetimer::detail::LabelArg{});
+                          false, ::xyzzy::scopetimer::detail::LabelArg{});
     }
 
     static void test_parse_elapsed_millis_invalid_inputs() {
@@ -393,7 +393,7 @@ private:
         char buf[64];
         long long ns = 2500000000LL; // 2.5s -> seconds branch
         for (auto &c : buf) c = '\0';
-        ewm::scopetimer::ScopeTimer::fmtAuto(ns, buf, sizeof(buf));
+        xyzzy::scopetimer::ScopeTimer::fmtAuto(ns, buf, sizeof(buf));
         const std::string out(buf);
         expect(out.find("ms") == std::string::npos, "fmtAuto(seconds): not milliseconds");
         expect(out.find("us") == std::string::npos, "fmtAuto(seconds): not microseconds");
@@ -405,7 +405,7 @@ private:
         char buf[64];
         long long ns = 500; // < 1000 ns triggers fmtNanos
         for (auto &c : buf) c = '\0';
-        ewm::scopetimer::ScopeTimer::fmtAuto(ns, buf, sizeof(buf));
+        xyzzy::scopetimer::ScopeTimer::fmtAuto(ns, buf, sizeof(buf));
         const std::string out(buf);
         expect(out.find("ns") != std::string::npos, "fmtAuto(nanos): nanoseconds unit present");
         expect(out.find("us") == std::string::npos, "fmtAuto(nanos): not microseconds");
@@ -415,7 +415,7 @@ private:
     }
 
     static void test_finalize_snprintf_result_branches() {
-        using ewm::scopetimer::ScopeTimerDetail::finalize_snprintf_result;
+        using xyzzy::scopetimer::ScopeTimerDetail::finalize_snprintf_result;
         {
             char buf[8]; for (auto &c : buf) c = 'X';
             size_t len = finalize_snprintf_result(-1, buf, sizeof(buf));
@@ -596,9 +596,9 @@ private:
     static inline std::string s_exe_path;
 };
 
-}} // namespace ewm::scopetimer
+}} // namespace xyzzy::scopetimer
 
 // C-style main that forwards to our friend-test class driver.
 int main(int argc, char** argv) {
-    return ewm::scopetimer::ScopeTimer_TestFriend::run_all(argc, argv) == 0 ? 0 : 1;
+    return xyzzy::scopetimer::ScopeTimer_TestFriend::run_all(argc, argv) == 0 ? 0 : 1;
 }

@@ -1,6 +1,6 @@
 /*
  * ScopeTimer - lightweight C++17 scope timing utility
- * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com>
+ * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -109,7 +109,7 @@
 #endif
 
 // Always open the namespaces unconditionally, so they are present in all builds.
-namespace ewm::scopetimer {
+namespace xyzzy::scopetimer {
 
     class ScopeTimer_TestFriend; // Forward declaration
 
@@ -293,7 +293,7 @@ namespace ewm::scopetimer {
         }
 
     private:
-        friend class ewm::scopetimer::ScopeTimer_TestFriend; // Allow unit tests to access private members
+        friend class xyzzy::scopetimer::ScopeTimer_TestFriend; // Allow unit tests to access private members
         
         /**
          * @brief Checks if the ScopeTimer is disabled based on the SCOPE_TIMER environment variable.
@@ -685,8 +685,8 @@ namespace ewm::scopetimer {
 
 #ifndef SCOPE_TIMER
 #define SCOPE_TIMER(...)                                                             \
-    ::ewm::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
-        SCOPE_FUNCTION, ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData())
+    ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
+        SCOPE_FUNCTION, ::xyzzy::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData())
 #endif
 
 /**
@@ -709,9 +709,9 @@ namespace ewm::scopetimer {
  */
 #ifndef SCOPE_TIMER_IF
 #define SCOPE_TIMER_IF(cond, ...)                                                          \
-    ::ewm::scopetimer::detail::ConditionalScopeTimer                                       \
+    ::xyzzy::scopetimer::detail::ConditionalScopeTimer                                       \
         ST_CAT(scopeTimerConditional__, ST_UNIQ)((cond), SCOPE_FUNCTION, [&]() noexcept {  \
-            return ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData();       \
+            return ::xyzzy::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData();       \
         })
 #endif
 
@@ -747,4 +747,4 @@ namespace ewm::scopetimer {
 
 #endif // NDEBUG
 
-} // namespace ewm::scopetimer
+} // namespace xyzzy::scopetimer

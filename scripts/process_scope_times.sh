@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
 # ScopeTimer Utilities - Bash helper scripts
-# Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com>
+# Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
