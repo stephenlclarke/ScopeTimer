@@ -43,6 +43,8 @@ public:
         test_labeldata_constructor_default_view();
         test_labelarg_owned_to_labeldata();
         test_log_directory_caching();
+        test_memory_sink_captures_output();
+        test_memory_sink_without_flush();
         test_threadlocal_format_buffers_reused();
         test_scope_timer_string_view_ctor();
         test_looped_work();
@@ -92,6 +94,17 @@ private:
         expect(timer.label_ == expected, txtMsg.c_str());
         timer.disabled_ = true; // avoid destructor logging so tests stay quiet
     }
+
+    static inline std::string& sinkCaptureBuffer() {
+        static std::string buf;
+        return buf;
+    }
+
+    static void testSinkWrite(const char* data, std::size_t len) noexcept {
+        sinkCaptureBuffer().append(data, len);
+    }
+
+    static void testSinkFlush() noexcept {}
 
     static double parseElapsedMillis(const std::string& line) {
         const std::string needle = "elapsed=";
@@ -159,6 +172,9 @@ private:
         std::remove(logPath.c_str());
         ::setenv("SCOPE_TIMER_DIR", logDir.c_str(), 1);
         ::setenv("SCOPE_TIMER_FLUSH_N", "1", 1);
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(logDir);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
 
         {
             SCOPE_TIMER("tests:simple_scope");
@@ -298,6 +314,30 @@ private:
         const char* first = ::xyzzy::scopetimer::ScopeTimer::endBufferAddressForTests();
         const char* second = ::xyzzy::scopetimer::ScopeTimer::endBufferAddressForTests();
         expect(first == second, "thread-local format buffers reuse the same memory per thread");
+    }
+
+    static void test_memory_sink_captures_output() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        {
+            SCOPE_TIMER("tests:memory_sink");
+            busyFor(150us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(sinkCaptureBuffer().find("tests:memory_sink") != std::string::npos,
+               "custom log sink captured scope output");
+    }
+
+    static void test_memory_sink_without_flush() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, nullptr);
+        {
+            SCOPE_TIMER("tests:memory_sink_no_flush");
+            busyFor(50us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(sinkCaptureBuffer().find("tests:memory_sink_no_flush") != std::string::npos,
+               "custom log sink without flush still captures output");
     }
 
     static void test_scope_timer_string_view_ctor() {
@@ -564,47 +604,43 @@ private:
     }
 
     static void test_logfile_null_branch() {
-        // Point log dir to a path that (very likely) does not exist so logFile() returns nullptr,
-        // exercising the false path of `if (FILE* fp = logFile()) { ... }`.
-        // Use PID to ensure uniqueness.
+        // Point log dir to a path that (very likely) does not exist so the default sink fails to open.
         std::string bogus = "/tmp/scopetimer_no_such_dir_" + std::to_string(::getpid());
         ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
         ::setenv("SCOPE_TIMER_FORMAT", "MICROS", 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(bogus);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
 
-        // Emit a timing scope; this should NOT create a logfile because the directory is invalid.
         {
             SCOPE_TIMER("tests:logfile_null_branch");
             busyFor(50us);
         }
 
-        // Verify that the directory and file were not created.
         struct stat st{};
         int dir_rc = ::stat(bogus.c_str(), &st);
-        expect(dir_rc != 0, "logFile() null branch: invalid dir not created by library");
+        expect(dir_rc != 0, "default sink: invalid dir not created by library");
 
         std::string logfile = bogus + "/scopetimer.log";
         int file_rc = ::stat(logfile.c_str(), &st);
-        expect(file_rc != 0, "logFile() null branch: no logfile created when dir invalid");
+        expect(file_rc != 0, "default sink: no logfile created when dir invalid");
+        expect(::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1,
+               "default sink keeps fd closed after failure");
     }
 
     static void test_logfile_failure_cache_branch() {
-        FILE*& handle = ScopeTimer::fileHandle();
-        if (handle) {
-            std::fflush(handle);
-            std::fclose(handle);
-            handle = nullptr;
-        }
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
         std::string bogus = "/tmp/scopetimer_cached_fail_" + std::to_string(::getpid()) + "_dir";
-        ::rmdir(bogus.c_str()); // ensure the directory does not exist; ignore failure
+        ::rmdir(bogus.c_str());
         ::setenv("SCOPE_TIMER_DIR", bogus.c_str(), 1);
-        FILE* first = ScopeTimer::logFile();
-        expect(first == nullptr, "logFile() returns nullptr for invalid directory");
-        FILE* second = ScopeTimer::logFile();
-        expect(second == nullptr, "logFile() cached failed path and skipped retry");
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(bogus);
+
+        bool firstAttempt = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
+        expect(!firstAttempt, "ensureLogFdOpen fails for invalid directory");
+        bool secondAttempt = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
+        expect(!secondAttempt, "ensureLogFdOpen skips repeated attempts for same bad path");
+
         ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
-        // Leave handle null so later tests reopen lazily under /tmp
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
     }
 
     // --------- bootstrapping helpers ---------

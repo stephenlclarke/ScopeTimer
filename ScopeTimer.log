@@ -1,0 +1,27 @@
+[simpleWork] TID=001 | void simpleWork() | start=2025-11-13 02:15:05.556 | end=2025-11-13 02:15:05.559 | elapsed=3.138ms
+[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2025-11-13 02:15:05.561 | end=2025-11-13 02:15:05.563 | elapsed=1.883ms
+[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2025-11-13 02:15:05.563 | end=2025-11-13 02:15:05.566 | elapsed=3.033ms
+[nestedScopes:outer] TID=001 | void nestedScopes() | start=2025-11-13 02:15:05.560 | end=2025-11-13 02:15:05.567 | elapsed=6.838ms
+[multi:second] TID=001 | void multipleTimersSameScope() | start=2025-11-13 02:15:05.568 | end=2025-11-13 02:15:05.569 | elapsed=1.004ms
+[multi:first] TID=001 | void multipleTimersSameScope() | start=2025-11-13 02:15:05.567 | end=2025-11-13 02:15:05.569 | elapsed=1.892ms
+[conditionalWork] TID=001 | void conditionalWork(bool) | start=2025-11-13 02:15:05.570 | end=2025-11-13 02:15:05.572 | elapsed=1.505ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2025-11-13 02:15:05.572 | end=2025-11-13 02:15:05.572 | elapsed=382.000us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2025-11-13 02:15:05.572 | end=2025-11-13 02:15:05.573 | elapsed=381.000us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2025-11-13 02:15:05.573 | end=2025-11-13 02:15:05.573 | elapsed=379.000us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2025-11-13 02:15:05.573 | end=2025-11-13 02:15:05.574 | elapsed=385.000us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2025-11-13 02:15:05.574 | end=2025-11-13 02:15:05.574 | elapsed=384.000us
+[loopedWork:total] TID=001 | void loopedWork(int) | start=2025-11-13 02:15:05.572 | end=2025-11-13 02:15:05.574 | elapsed=1.959ms
+[threadedWork:worker] TID=002 | threadedWork(int)::<lambda()> | start=2025-11-13 02:15:05.574 | end=2025-11-13 02:15:05.575 | elapsed=632.000us
+[threadedWork:worker] TID=003 | threadedWork(int)::<lambda()> | start=2025-11-13 02:15:05.574 | end=2025-11-13 02:15:05.575 | elapsed=881.000us
+[threadedWork:worker] TID=004 | threadedWork(int)::<lambda()> | start=2025-11-13 02:15:05.574 | end=2025-11-13 02:15:05.575 | elapsed=1.006ms
+[threadedWork:total] TID=001 | void threadedWork(int) | start=2025-11-13 02:15:05.574 | end=2025-11-13 02:15:05.575 | elapsed=1.141ms
+[Worker:constructor] TID=001 | Worker::Worker() | start=2025-11-13 02:15:05.575 | end=2025-11-13 02:15:05.576 | elapsed=630.000us
+[Worker:singleTask] TID=001 | void Worker::doTask(std::string_view) const | start=2025-11-13 02:15:05.576 | end=2025-11-13 02:15:05.577 | elapsed=1.259ms
+[Worker:task] TID=001 | void Worker::doTask(std::string_view) const | start=2025-11-13 02:15:05.577 | end=2025-11-13 02:15:05.578 | elapsed=1.259ms
+[Worker:task] TID=001 | void Worker::doTask(std::string_view) const | start=2025-11-13 02:15:05.578 | end=2025-11-13 02:15:05.580 | elapsed=1.258ms
+[Worker:task] TID=001 | void Worker::doTask(std::string_view) const | start=2025-11-13 02:15:05.580 | end=2025-11-13 02:15:05.581 | elapsed=1.259ms
+[Worker:doMultipleTasks] TID=001 | void Worker::doMultipleTasks(int, bool) const | start=2025-11-13 02:15:05.577 | end=2025-11-13 02:15:05.581 | elapsed=3.795ms
+[Worker:task] TID=001 | void Worker::doTask(std::string_view) const | start=2025-11-13 02:15:05.581 | end=2025-11-13 02:15:05.582 | elapsed=1.259ms
+[Worker:task] TID=001 | void Worker::doTask(std::string_view) const | start=2025-11-13 02:15:05.582 | end=2025-11-13 02:15:05.583 | elapsed=1.254ms
+[ScopeTimer] TID=001 | LifetimeTracked | start=2025-11-13 02:15:05.583 | end=2025-11-13 02:15:05.586 | elapsed=3.092ms
+[ScopeTimer] TID=001 | int main() | start=2025-11-13 02:15:05.556 | end=2025-11-13 02:15:05.586 | elapsed=30.894ms

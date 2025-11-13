@@ -96,10 +96,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fcntl.h>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -260,12 +264,12 @@ namespace xyzzy::scopetimer {
             formatTime(endWall, fmtBufs.endBuf, sizeof(fmtBufs.endBuf));
             formatElapsed(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf));
 
-            // Final line buffer
-            char line[512];
+            // Final line buffer reused per thread to avoid repeated stack allocation.
+            auto& lineBuf = lineBuffer();
 
             // Build the log line
             int n = std::snprintf(
-                line, sizeof(line),
+                lineBuf.data, sizeof(lineBuf.data),
                 "[%.*s] TID=%03u | %.*s | start=%s | end=%s | elapsed=%s\n",
                 static_cast<int>(label_.size()), label_.data(),
                 threadNum_,
@@ -276,22 +280,20 @@ namespace xyzzy::scopetimer {
             );
 
             // Convert snprintf result to a safe byte count
-            const std::size_t len = ScopeTimerDetail::finalize_snprintf_result(n, line, sizeof(line));
+            const std::size_t len = ScopeTimerDetail::finalize_snprintf_result(n, lineBuf.data, sizeof(lineBuf.data));
 
             // Keep log lines non-interleaved (mutex only around IO)
             std::lock_guard lock(outMutex());
 
-            if (FILE* fp = logFile()) {
-                if (len) {
-                    std::fwrite(line, 1, len, fp);
-                }
+            if (len) {
+                sinkWriteFn_(lineBuf.data, len);
+            }
 
-                // Periodic flush to keep logs visible even with large buffers
-                unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1;
+            // Periodic flush to keep logs visible even with large buffers
+            unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1;
 
-                if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
-                    std::fflush(fp);
-                }
+            if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
+                sinkFlushFn_();
             }
         }
 
@@ -343,12 +345,6 @@ namespace xyzzy::scopetimer {
             }
 
             return tid;
-        }
-
-        // Accessor for the singleton FILE* so I can flush/close at process exit.
-        static inline FILE*& fileHandle() noexcept {
-            static FILE* fp{ nullptr };
-            return fp;
         }
 
         /**
@@ -405,63 +401,6 @@ namespace xyzzy::scopetimer {
             }
             logDirCache_ = std::move(normalized);
             logDirInitialized_ = true;
-        }
-
-        /**
-         * @brief Provides a singleton FILE* for logging with a large user buffer.
-         *
-         * The log file path is controlled by the SCOPE_TIMER_DIR environment variable,
-         * defaulting to /tmp/ScopeTimer.log. Uses a 1 MiB buffer for high-throughput buffered IO.
-         *
-         * @return FILE* Pointer to the opened log file, or nullptr on failure.
-         */
-        static inline FILE* logFile() noexcept {
-            FILE*& fp = fileHandle();
-
-            if(fp) {
-                return fp;
-            }
-
-            static std::string lastFailedPath;
-            static bool lastAttemptFailed = false;
-
-            // Singleton FILE* with large user buffer for high-throughput buffered IO
-            const std::string path = logDirectory() + "ScopeTimer.log";
-
-            if (lastAttemptFailed && path == lastFailedPath) {
-                return nullptr;
-            }
-
-            if (FILE* f = std::fopen(path.c_str(), "a")) {
-                // Use a static buffer for the FILE*, 1 MiB for throughput
-                static auto buf = new char[1 << 20];
-                std::setvbuf(f, buf, _IOFBF, 1 << 20);
-                fp = f;
-                lastAttemptFailed = false;
-                lastFailedPath.clear();
-
-                // Ensure flush+close at process shutdown
-                static bool registered = false;
-
-                if(!registered) {
-                    std::atexit([]() noexcept {
-                        FILE* fh = fileHandle();
-
-                        if(fh) {
-                            std::fflush(fh);
-                            std::fclose(fh);
-                            // do not reset fh here; process is exiting
-                        }
-                    });
-                    registered = true;
-                }
-            }
-
-            if (!fp) {
-                lastFailedPath = path;
-                lastAttemptFailed = true;
-            }
-            return fp;
         }
 
         // One-time-selected elapsed-time formatter infrastructure
@@ -614,6 +553,44 @@ namespace xyzzy::scopetimer {
             return formatBuffers().endBuf;
         }
 
+        struct LineBuffer {
+            char data[512];
+        };
+
+        static inline LineBuffer& lineBuffer() noexcept {
+            return tlsLineBuffer_;
+        }
+
+        static void defaultSinkWrite(const char* data, std::size_t len) noexcept;
+        static void defaultSinkFlush() noexcept;
+        static void noopSinkFlush() noexcept;
+
+        using SinkWriteFn = std::function<void(const char*, std::size_t)>;
+        using SinkFlushFn = std::function<void()>;
+
+        static inline SinkWriteFn sinkWriteFn_{
+            [](const char* data, std::size_t len) {
+                defaultSinkWrite(data, len);
+            }
+        };
+        static inline SinkFlushFn sinkFlushFn_{
+            [] {
+                defaultSinkFlush();
+            }
+        };
+
+        static inline void setLogSinkForTests(SinkWriteFn writeFn, SinkFlushFn flushFn) noexcept {
+            if (writeFn) {
+                closeLogFd();
+                sinkWriteFn_ = std::move(writeFn);
+                sinkFlushFn_ = flushFn ? std::move(flushFn) : SinkFlushFn{noopSinkFlush};
+            } else {
+                closeLogFd();
+                sinkWriteFn_ = defaultSinkWrite;
+                sinkFlushFn_ = defaultSinkFlush;
+            }
+        }
+
         inline void assignLabel(detail::LabelData&& data) noexcept {
             if (!data.storage.empty()) {
                 labelStorage_ = std::move(data.storage);
@@ -631,8 +608,68 @@ namespace xyzzy::scopetimer {
         uint32_t threadNum_; ///< Unique thread ID number.
 
         static inline thread_local FormatBuffers tlsFormatBuffers_{};
+        static inline thread_local LineBuffer tlsLineBuffer_{};
         static inline std::string logDirCache_{"/tmp/"};
         static inline bool logDirInitialized_{false};
+
+        static inline bool ensureLogFdOpen() noexcept {
+            int& fd = logFd();
+            if (fd >= 0) {
+                return true;
+            }
+
+            static std::string lastFailedPath;
+            static bool lastAttemptFailed = false;
+
+            const std::string path = logDirectory() + "ScopeTimer.log";
+
+            if (lastAttemptFailed && path == lastFailedPath) {
+                return false;
+            }
+
+            if (int newFd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644); newFd >= 0) {
+                fd = newFd;
+                lastAttemptFailed = false;
+                lastFailedPath.clear();
+                registerLogFdCleanup();
+                return true;
+            }
+
+            lastFailedPath = path;
+            lastAttemptFailed = true;
+            return false;
+        }
+
+        static inline void registerLogFdCleanup() noexcept {
+            static bool registered = false;
+            if (!registered) {
+                std::atexit([]() noexcept {
+                    closeLogFd();
+                });
+                registered = true;
+            }
+        }
+
+        static inline int& logFd() noexcept {
+            static int fd = -1;
+            return fd;
+        }
+
+        static inline void closeLogFd() noexcept {
+            int& fd = logFd();
+            if (fd >= 0) {
+                ::close(fd);
+                fd = -1;
+            }
+        }
+
+        static inline int defaultLogFdForTests() noexcept {
+            return logFd();
+        }
+
+        static inline void closeLogFdForTests() noexcept {
+            closeLogFd();
+        }
 
         /**
          * I store both a steady_clock (startSteady_) and a system_clock (startWall_) timestamp:
@@ -782,3 +819,41 @@ namespace xyzzy::scopetimer {
 #endif // NDEBUG
 
 } // namespace xyzzy::scopetimer
+
+// Back-compatibility alias so existing code that referenced ::ewm::scopetimer keeps working.
+namespace ewm {
+    namespace scopetimer = ::xyzzy::scopetimer;
+}
+
+inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, std::size_t len) noexcept {
+    if (len == 0) {
+        return;
+    }
+    if (!ensureLogFdOpen()) {
+        return;
+    }
+    int fd = logFd();
+    if (fd < 0) {
+        return;
+    }
+    ssize_t unused = ::write(fd, data, len);
+    (void)unused;
+}
+
+inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {
+    int fd = logFd();
+    if (fd >= 0) {
+        ::fsync(fd);
+    }
+}
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#endif
+inline void xyzzy::scopetimer::ScopeTimer::noopSinkFlush() noexcept {
+    // Intentionally blank: used when tests inject a sink but do not need flush semantics.
+}
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
