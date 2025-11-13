@@ -116,7 +116,7 @@ END {
     avg = (n ? sum[k] / n : 0)
 
     # Compute trend based on first 10% vs last 10% averages (ceil), with noise guard
-    trend = "-"
+    trend = "→"
     if (n >= 5) {
       nseg = int((n + 9) / 10)   # ceil(n*0.1)
       if (nseg < 1) nseg = 1
@@ -128,9 +128,9 @@ END {
       delta = lavg - favg
       rel = (favg > 0 ? delta / favg : 0)
       # Consider trend only if both absolute and relative change pass thresholds
-      if (delta > 5 && rel > 0.05)        trend = "↑"
-      else if (delta < -5 && -rel > 0.05) trend = "↓"
-      else                                trend = "-"
+      if (delta > 5 && rel > 0.05)        trend = "↗"
+      else if (delta < -5 && -rel > 0.05) trend = "↘"
+      else                                trend = "→"
     }
 
     printf("%s\n  count=%d  min=%s  avg=%s  max=%s  %s\n\n",
