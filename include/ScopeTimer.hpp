@@ -90,14 +90,17 @@
 
 #include <atomic>
 #include <algorithm>  // for std::transform
+#include <array>
 #include <cctype>     // for std::toupper
 #include <chrono>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
 #include <functional>
+#include <memory_resource>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -576,6 +579,9 @@ namespace xyzzy::scopetimer {
             return tlsLineBuffer_;
         }
 
+        /**
+         * @brief Per-thread assembly buffer for the full log line.
+         */
         static void defaultSinkWrite(const char* data, std::size_t len) noexcept;
         static void defaultSinkFlush() noexcept;
         static void noopSinkFlush() noexcept;
@@ -608,7 +614,7 @@ namespace xyzzy::scopetimer {
 
         inline void assignLabel(detail::LabelData&& data) noexcept {
             if (!data.storage.empty()) {
-                labelStorage_ = std::move(data.storage);
+                labelStorage_.assign(data.storage.data(), data.storage.size());
                 label_ = labelStorage_;
             } else if (!data.view.empty()) {
                 label_ = data.view;
@@ -619,7 +625,9 @@ namespace xyzzy::scopetimer {
 
         std::string_view where_; ///< Description of the scope being timed.
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
-        std::string labelStorage_; ///< Owns label storage when provided via temporaries.
+        std::array<std::byte, 128> labelBuffer_{};
+        std::pmr::monotonic_buffer_resource labelResource_{labelBuffer_.data(), labelBuffer_.size()};
+        std::pmr::string labelStorage_{ &labelResource_ }; ///< Owns label storage when provided via temporaries.
         uint32_t threadNum_; ///< Unique thread ID number.
 
         static inline thread_local FormatBuffers tlsFormatBuffers_{};
@@ -702,6 +710,21 @@ namespace xyzzy::scopetimer {
          */
         static inline void closeLogFdForTests() noexcept {
             closeLogFd();
+        }
+
+        static inline bool labelUsesLocalBufferForTests(const ScopeTimer& timer) noexcept {
+            const char* ptr = timer.label_.data();
+            const char* begin = reinterpret_cast<const char*>(timer.labelBuffer_.data());
+            const char* end = begin + timer.labelBuffer_.size();
+            return ptr >= begin && ptr < end;
+        }
+
+        static inline std::pmr::memory_resource* labelAllocatorResourceForTests(const ScopeTimer& timer) noexcept {
+            return timer.labelStorage_.get_allocator().resource();
+        }
+
+        static inline const std::pmr::monotonic_buffer_resource* localLabelResourceForTests(const ScopeTimer& timer) noexcept {
+            return &timer.labelResource_;
         }
 
         /**
