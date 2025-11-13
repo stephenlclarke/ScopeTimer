@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -30,6 +32,15 @@ public:
         test_nested_scopes();
         test_conditional_timer();
         test_conditional_timer_spans_scope();
+        test_parse_elapsed_millis_invalid_inputs();
+        test_read_elapsed_millis_missing_file();
+        test_child_probe_unknown_mode();
+        test_init_exe_path_default_path();
+        test_labelarg_temporary_string();
+        test_labelarg_literal_and_pointer_variants();
+        test_labeldata_manual_empty_view();
+        test_labelarg_empty_literal_to_labeldata();
+        test_scope_timer_string_view_ctor();
         test_looped_work();
         test_threaded();
         test_env_format_variants();
@@ -66,6 +77,16 @@ private:
 
     static inline void busyFor(std::chrono::microseconds us) {
         std::this_thread::sleep_for(us);
+    }
+
+    static void verifyLabelResult(const char* scenario, std::string_view expected, bool expectOwned, ::ewm::scopetimer::detail::LabelArg arg) {
+        ::ewm::scopetimer::ScopeTimer timer("tests:label:probe", std::move(arg).toLabelData());
+        bool owned = !timer.labelStorage_.empty();
+        std::string ownMsg = std::string(scenario) + " (ownership)";
+        expect(owned == expectOwned, ownMsg.c_str());
+        std::string txtMsg = std::string(scenario) + " (text)";
+        expect(timer.label_ == expected, txtMsg.c_str());
+        timer.disabled_ = true; // avoid destructor logging so tests stay quiet
     }
 
     static double parseElapsedMillis(const std::string& line) {
@@ -155,38 +176,143 @@ private:
     }
 
     static void test_conditional_timer_spans_scope() {
-        char templ[] = "/tmp/scopetimer_ifXXXXXX";
-        char* dir = ::mkdtemp(templ);
-        std::string tmpdir;
-        bool cleanupDir = false;
-        if (dir) {
-            tmpdir = dir;
-            cleanupDir = true;
-        } else {
-            tmpdir = "/tmp/scopetimer_if_fallback";
-            if (::mkdir(tmpdir.c_str(), 0700) == 0 || errno == EEXIST) {
-                cleanupDir = false; // do not remove shared fallback
+        auto runScenario = [](bool forceFallbackOnly) {
+            char templ[] = "/tmp/scopetimer_ifXXXXXX";
+            char* dir = ::mkdtemp(templ);
+            std::string tmpdir;
+            bool cleanupDir = false;
+
+            if (forceFallbackOnly && dir) {
+                ::rmdir(dir);
+                dir = nullptr;
             }
-        }
 
-        const std::string logfile = tmpdir + "/ScopeTimer.log";
-        std::remove(logfile.c_str());
+            if (dir) {
+                tmpdir = dir;
+                cleanupDir = true;
+            } else {
+                tmpdir = "/tmp/scopetimer_if_fallback_" + std::to_string(::getpid());
+                if (::mkdir(tmpdir.c_str(), 0700) == 0) {
+                    cleanupDir = true;
+                } else if (errno == EEXIST) {
+                    cleanupDir = false;
+                } else {
+                    tmpdir = "/tmp";
+                    cleanupDir = false;
+                }
+            }
 
-        int rc = run_child_with_env({
-            {"SCOPETIMER_PROBE", "if_scope"},
-            {"SCOPE_TIMER_DIR", tmpdir},
-            {"SCOPE_TIMER_FORMAT", "MILLIS"},
-            {"SCOPE_TIMER_FLUSH_N", "1"}
-        });
-        expect(rc == 0, "child process for conditional timer probe exited cleanly");
+            if (forceFallbackOnly) {
+                if (cleanupDir && tmpdir != "/tmp") {
+                    ::rmdir(tmpdir.c_str());
+                }
+                return;
+            }
 
-        const double elapsedMs = readElapsedMillisFromLog(logfile, "tests:conditional:lifetime");
-        expect(elapsedMs >= 5.0, "SCOPE_TIMER_IF spans enclosing scope");
+            const std::string logfile = tmpdir + "/ScopeTimer.log";
+            std::remove(logfile.c_str());
 
-        std::remove(logfile.c_str());
-        if (cleanupDir) {
-            ::rmdir(tmpdir.c_str());
-        }
+            int rc = run_child_with_env({
+                {"SCOPETIMER_PROBE", "if_scope"},
+                {"SCOPE_TIMER_DIR", tmpdir},
+                {"SCOPE_TIMER_FORMAT", "MILLIS"},
+                {"SCOPE_TIMER_FLUSH_N", "1"}
+            });
+            expect(rc == 0, "child process for conditional timer probe exited cleanly");
+
+            const double elapsedMs = readElapsedMillisFromLog(logfile, "tests:conditional:lifetime");
+            expect(elapsedMs >= 5.0, "SCOPE_TIMER_IF spans enclosing scope");
+
+            std::remove(logfile.c_str());
+            if (cleanupDir && tmpdir != "/tmp") {
+                ::rmdir(tmpdir.c_str());
+            }
+        };
+
+        runScenario(true);
+        runScenario(false);
+    }
+
+    static void test_labeldata_manual_empty_view() {
+        ::ewm::scopetimer::detail::LabelData data;
+        data.view = std::string_view{};
+        ::ewm::scopetimer::ScopeTimer timer("tests:labeldata:empty", std::move(data));
+        expect(timer.label_ == std::string_view("ScopeTimer"), "LabelData empty view defaults to ScopeTimer");
+        expect(timer.labelStorage_.empty(), "LabelData empty view does not allocate storage");
+        timer.disabled_ = true;
+    }
+
+    static void test_labelarg_empty_literal_to_labeldata() {
+        ::ewm::scopetimer::detail::LabelArg arg{""};
+        auto data = std::move(arg).toLabelData();
+        expect(data.view == std::string_view("ScopeTimer"), "LabelArg empty literal defaults to ScopeTimer");
+        expect(data.storage.empty(), "LabelArg empty literal does not allocate storage");
+    }
+
+    static void test_scope_timer_string_view_ctor() {
+        std::string_view svLabel = "tests:label:ctor_sv";
+        ::ewm::scopetimer::ScopeTimer timer("tests:label:ctor_scope", svLabel);
+        expect(timer.label_ == svLabel, "ScopeTimer string_view ctor copies label text");
+        expect(timer.labelStorage_.empty(), "ScopeTimer string_view ctor reuses provided storage");
+        timer.disabled_ = true;
+    }
+
+    static void test_labelarg_temporary_string() {
+        verifyLabelResult("temporary std::string rvalue", "tests:label:temporary",
+                          true, ::ewm::scopetimer::detail::LabelArg{std::string("tests:label:temporary")});
+
+        std::string lvalue = "tests:label:lvalue";
+        verifyLabelResult("std::string lvalue copy", "tests:label:lvalue",
+                          true, ::ewm::scopetimer::detail::LabelArg{lvalue});
+
+        std::string moveSrc = "tests:label:moved";
+        verifyLabelResult("std::string rvalue move", "tests:label:moved",
+                          true, ::ewm::scopetimer::detail::LabelArg{std::move(moveSrc)});
+
+        std::string_view sv = "tests:label:sv";
+        verifyLabelResult("std::string_view copy", "tests:label:sv",
+                          true, ::ewm::scopetimer::detail::LabelArg{sv});
+    }
+
+    static void test_labelarg_literal_and_pointer_variants() {
+        verifyLabelResult("string literal", "tests:label:literal",
+                          false, ::ewm::scopetimer::detail::LabelArg{"tests:label:literal"});
+
+        verifyLabelResult("string literal empty", "ScopeTimer",
+                          false, ::ewm::scopetimer::detail::LabelArg{""});
+
+        const char* ptr = "tests:label:ptr";
+        verifyLabelResult("const char* pointer", "tests:label:ptr",
+                          false, ::ewm::scopetimer::detail::LabelArg{ptr});
+
+        const char* emptyPtr = "";
+        verifyLabelResult("const char* empty string", "ScopeTimer",
+                          false, ::ewm::scopetimer::detail::LabelArg{emptyPtr});
+
+        const char* nullPtr = nullptr;
+        verifyLabelResult("const char* null pointer", "ScopeTimer",
+                          false, ::ewm::scopetimer::detail::LabelArg{nullPtr});
+
+        verifyLabelResult("default LabelArg", "ScopeTimer",
+                          false, ::ewm::scopetimer::detail::LabelArg{});
+    }
+
+    static void test_parse_elapsed_millis_invalid_inputs() {
+        double val = parseElapsedMillis("no elapsed field");
+        expect(val < 0.0, "parseElapsedMillis returns -1 when marker missing");
+
+        val = parseElapsedMillis("elapsed=12us");
+        expect(val < 0.0, "parseElapsedMillis returns -1 when units not ms");
+
+        val = parseElapsedMillis("[ScopeTimer] elapsed=abcdms");
+        expect(val < 0.0, "parseElapsedMillis returns -1 when numeric parse fails");
+    }
+
+    static void test_read_elapsed_millis_missing_file() {
+        std::string path = "/tmp/scopetimer_missing_" + std::to_string(::getpid()) + ".log";
+        std::remove(path.c_str());
+        double val = readElapsedMillisFromLog(path, "tests:missing");
+        expect(val < 0.0, "readElapsedMillisFromLog returns -1 when file missing");
     }
 
     static void test_looped_work() {
@@ -315,6 +441,13 @@ private:
         return -1;
     }
 
+    static void test_child_probe_unknown_mode() {
+        ::setenv("SCOPETIMER_PROBE", "unknown-mode", 1);
+        int rc = child_probe_main_if_requested();
+        expect(rc == -1, "child_probe_main_if_requested returns -1 for unknown probe mode");
+        ::unsetenv("SCOPETIMER_PROBE");
+    }
+
     static int run_child_with_env(const std::vector<std::pair<std::string,std::string>>& envs) {
         std::string envBlock;
         bool probeSet = false;
@@ -429,6 +562,19 @@ private:
             if (::realpath(argv[0], buf)) s_exe_path = buf; else s_exe_path = argv[0];
         } else {
             s_exe_path = "./scopetimer_tests";
+        }
+    }
+
+    static void test_init_exe_path_default_path() {
+        std::string original = s_exe_path;
+        init_exe_path(0, nullptr);
+        expect(s_exe_path == "./scopetimer_tests", "init_exe_path falls back to default binary path");
+
+        if (!original.empty()) {
+            std::vector<char> buf(original.begin(), original.end());
+            buf.push_back('\0');
+            char* fakeArgv[] = { buf.data() };
+            init_exe_path(1, fakeArgv);
         }
     }
 

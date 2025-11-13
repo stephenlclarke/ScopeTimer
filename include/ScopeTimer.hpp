@@ -100,6 +100,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define SCOPE_FUNCTION __PRETTY_FUNCTION__
@@ -146,6 +147,55 @@ namespace ewm::scopetimer {
         }
     } // namespace ScopeTimerDetail
 
+    namespace detail {
+        struct LabelData {
+            std::string storage;
+            std::string_view view{ "ScopeTimer" };
+
+            LabelData() = default;
+
+            explicit LabelData(std::string_view v) noexcept
+                : view(v.empty() ? std::string_view("ScopeTimer") : v) {}
+        };
+
+        struct LabelArg {
+            LabelArg() = default;
+
+            template <std::size_t N>
+            explicit LabelArg(const char (&literal)[N]) noexcept
+                : view_(std::string_view(literal, N ? N - 1 : 0)) {}
+
+            explicit LabelArg(const char* s) noexcept
+                : view_(s && *s ? std::string_view{s} : std::string_view{"ScopeTimer"}) {}
+
+            explicit LabelArg(const std::string& s)
+                : storage_(s), view_(storage_) {}
+
+            explicit LabelArg(std::string&& s) noexcept
+                : storage_(std::move(s)), view_(storage_) {}
+
+            explicit LabelArg(std::string_view sv)
+                : storage_(sv), view_(storage_) {}
+
+            LabelData toLabelData() && noexcept {
+                LabelData data;
+                if (!storage_.empty()) {
+                    data.storage = std::move(storage_);
+                    data.view = data.storage;
+                } else if (!view_.empty()) {
+                    data.view = view_;
+                } else {
+                    data.view = "ScopeTimer";
+                }
+                return data;
+            }
+
+        private:
+            std::string storage_;
+            std::string_view view_{ "ScopeTimer" };
+        };
+    } // namespace detail
+
     /**
      * @brief A high-resolution scope timer for measuring execution time of code blocks.
      *
@@ -160,21 +210,27 @@ namespace ewm::scopetimer {
          * @brief Constructs a ScopeTimer instance and records the start time.
          *
          * @param where A std::string_view describing the scope or function being timed.
-         * @param label An optional std::string_view label for the log output (defaults to "ScopeTimer").
+         * @param labelData A helper struct conveying the label string and any owned storage.
          */
-        inline explicit ScopeTimer(std::string_view where, std::string_view label = "ScopeTimer") noexcept {
+        inline explicit ScopeTimer(std::string_view where, detail::LabelData labelData = detail::LabelData{}) noexcept {
             if(isDisabled()) {
                 disabled_ = true;
                 return;
             }
 
             where_ = where;
-            label_ = label;
+            assignLabel(std::move(labelData));
             threadNum_ = getThreadIdNumber();
             startSteady_ = std::chrono::steady_clock::now();
             startWall_ = std::chrono::system_clock::now();
             formatTime(startWall_, startWallFormatted_, sizeof(startWallFormatted_));
         }
+
+        /**
+         * @brief Convenience overload that accepts a plain string_view label.
+         */
+        inline explicit ScopeTimer(std::string_view where, std::string_view label) noexcept
+            : ScopeTimer(where, detail::LabelData{label}) {}
 
         ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
         ScopeTimer& operator=(const ScopeTimer&) = delete; ///< Deleted copy assignment operator.
@@ -528,8 +584,20 @@ namespace ewm::scopetimer {
             getFormatter()(ns, out, outSz);
         }
 
+        inline void assignLabel(detail::LabelData&& data) noexcept {
+            if (!data.storage.empty()) {
+                labelStorage_ = std::move(data.storage);
+                label_ = labelStorage_;
+            } else if (!data.view.empty()) {
+                label_ = data.view;
+            } else {
+                label_ = "ScopeTimer";
+            }
+        }
+
         std::string_view where_; ///< Description of the scope being timed.
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
+        std::string labelStorage_; ///< Owns label storage when provided via temporaries.
         uint32_t threadNum_; ///< Unique thread ID number.
 
         /**
@@ -567,21 +635,7 @@ namespace ewm::scopetimer {
         bool disabled_{ false };
     };
 
-    // Helper for optional label argument, to avoid use of GNU extension '##__VA_ARGS__'
     namespace detail {
-        struct LabelArg {
-            std::string_view v{ "ScopeTimer" };
-
-            LabelArg() = default;
-
-            explicit LabelArg(std::string_view s)
-                : v(s) {}
-
-            std::string_view toStringView() const noexcept {
-                return v;
-            }
-        };
-
         class ConditionalScopeTimer {
         public:
             template <typename LabelFactory>
@@ -632,7 +686,7 @@ namespace ewm::scopetimer {
 #ifndef SCOPE_TIMER
 #define SCOPE_TIMER(...)                                                             \
     ::ewm::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
-        SCOPE_FUNCTION, ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toStringView())
+        SCOPE_FUNCTION, ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData())
 #endif
 
 /**
@@ -657,7 +711,7 @@ namespace ewm::scopetimer {
 #define SCOPE_TIMER_IF(cond, ...)                                                          \
     ::ewm::scopetimer::detail::ConditionalScopeTimer                                       \
         ST_CAT(scopeTimerConditional__, ST_UNIQ)((cond), SCOPE_FUNCTION, [&]() noexcept {  \
-            return ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toStringView();      \
+            return ::ewm::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData();       \
         })
 #endif
 
