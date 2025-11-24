@@ -114,11 +114,11 @@ private:
         std::this_thread::sleep_for(us);
     }
 
-    static void verifyLabelResult(const char* scenario, std::string_view expected, bool expectOwned, ::xyzzy::scopetimer::detail::LabelArg arg) {
+    static void verifyLabelResult(const char* scenario, std::string_view expected, bool expectLocal, ::xyzzy::scopetimer::detail::LabelArg arg) {
         ::xyzzy::scopetimer::ScopeTimer timer("tests:label:probe", std::move(arg).toLabelData());
-        bool owned = !timer.labelStorage_.empty();
-        std::string ownMsg = std::string(scenario) + " (ownership)";
-        expect(owned == expectOwned, ownMsg.c_str());
+        bool local = ::xyzzy::scopetimer::ScopeTimer::labelUsesLocalBufferForTests(timer);
+        std::string ownMsg = std::string(scenario) + " (local buffer)";
+        expect(local == expectLocal, ownMsg.c_str());
         std::string txtMsg = std::string(scenario) + " (text)";
         expect(timer.label_ == expected, txtMsg.c_str());
         timer.disabled_ = true; // avoid destructor logging so tests stay quiet
@@ -426,9 +426,8 @@ private:
         std::string dynamicLabel = "tests:pmr_label:" + std::to_string(::getpid());
         {
             ::xyzzy::scopetimer::ScopeTimer timer("tests:pmr_scope", dynamicLabel);
-            auto* resource = ::xyzzy::scopetimer::ScopeTimer::labelAllocatorResourceForTests(timer);
-            auto* local = ::xyzzy::scopetimer::ScopeTimer::localLabelResourceForTests(timer);
-            expect(resource == local, "pmr allocator matches the timer-local buffer resource");
+            expect(::xyzzy::scopetimer::ScopeTimer::labelUsesLocalBufferForTests(timer),
+                   "label stored in timer-local buffer for dynamic label when it fits");
         }
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
     }
@@ -485,10 +484,10 @@ private:
         std::string src = "tests:label:ephemeral";
         const char* ptr = src.c_str();
         ::xyzzy::scopetimer::detail::LabelArg arg{ptr};
-        src.clear(); // the original storage now differs; LabelArg should have copied
+        src.clear(); // the original storage now differs; LabelArg should still produce the text
         auto data = std::move(arg).toLabelData();
-        expect(data.storage == "tests:label:ephemeral", "LabelArg copies const char* to owned storage");
-        expect(data.view == data.storage, "LabelArg const char* view references owned storage");
+        expect(data.view == std::string_view("tests:label:ephemeral"), "LabelArg keeps const char* text alive via copy");
+        expect(data.storage.empty(), "LabelArg const char* avoids heap storage");
     }
 
     static void test_parse_elapsed_millis_invalid_inputs() {

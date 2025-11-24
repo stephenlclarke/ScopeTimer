@@ -100,7 +100,6 @@
 #include <ctime>
 #include <fcntl.h>
 #include <functional>
-#include <memory_resource>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -179,39 +178,34 @@ namespace xyzzy::scopetimer {
 
             template <std::size_t N>
             explicit LabelArg(const char (&literal)[N]) noexcept
-                : storage_(literal, N ? N - 1 : 0) {}
+                : view_(literal, N ? N - 1 : 0) {}
 
             explicit LabelArg(const char* s) {
                 if (s && *s) {
-                    owned_ = s;           // copy to guarantee lifetime safety
-                    ownsStorage_ = true;
+                    view_ = std::string_view{s, std::strlen(s)};
                 } else {
-                    storage_ = std::string_view{"ScopeTimer"};
+                    view_ = std::string_view{"ScopeTimer"};
                 }
             }
 
             explicit LabelArg(std::string_view sv)
-                : storage_(sv) {}
+                : view_(sv) {}
 
             explicit LabelArg(const std::string& s)
                 : owned_(s),
-                  ownsStorage_(true) {}
+                  view_(owned_) {}
 
             explicit LabelArg(std::string&& s) noexcept
                 : owned_(std::move(s)),
-                  ownsStorage_(true) {}
+                  view_(owned_) {}
 
             LabelData toLabelData() && noexcept {
-                if (ownsStorage_) {
-                    return LabelData(std::string_view{}, std::move(owned_));
-                }
-                return LabelData(storage_);
+                return LabelData(view_, std::move(owned_));
             }
 
         private:
-            std::string_view storage_{ "ScopeTimer" };
             std::string owned_;
-            bool ownsStorage_{ false };
+            std::string_view view_{ "ScopeTimer" };
         };
     } // namespace detail
 
@@ -612,21 +606,26 @@ namespace xyzzy::scopetimer {
         }
 
         inline void assignLabel(detail::LabelData&& data) noexcept {
-            if (!data.storage.empty()) {
-                labelStorage_.assign(data.storage.data(), data.storage.size());
-                label_ = labelStorage_;
-            } else if (!data.view.empty()) {
-                label_ = data.view;
-            } else {
+            const std::string_view source = !data.storage.empty() ? std::string_view{data.storage} : data.view;
+            if (source.empty()) {
                 label_ = "ScopeTimer";
+                return;
+            }
+
+            if (source.size() < labelBuffer_.size()) {
+                std::memcpy(labelBuffer_.data(), source.data(), source.size());
+                label_ = std::string_view{labelBuffer_.data(), source.size()};
+                labelHeapStorage_.clear();
+            } else {
+                labelHeapStorage_.assign(source.begin(), source.end());
+                label_ = labelHeapStorage_;
             }
         }
 
         std::string_view where_; ///< Description of the scope being timed.
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
-        std::array<std::byte, 128> labelBuffer_{};
-        std::pmr::monotonic_buffer_resource labelResource_{labelBuffer_.data(), labelBuffer_.size()};
-        std::pmr::string labelStorage_{ &labelResource_ }; ///< Owns label storage when provided via temporaries.
+        std::array<char, 128> labelBuffer_{};
+        std::string labelHeapStorage_;
         uint32_t threadNum_; ///< Unique thread ID number.
 
         static inline thread_local FormatBuffers tlsFormatBuffers_{};
@@ -721,17 +720,13 @@ namespace xyzzy::scopetimer {
 
         static inline bool labelUsesLocalBufferForTests(const ScopeTimer& timer) noexcept {
             const char* ptr = timer.label_.data();
-            const char* begin = reinterpret_cast<const char*>(timer.labelBuffer_.data());
+            const char* begin = timer.labelBuffer_.data();
             const char* end = begin + timer.labelBuffer_.size();
             return ptr >= begin && ptr < end;
         }
 
-        static inline std::pmr::memory_resource* labelAllocatorResourceForTests(const ScopeTimer& timer) noexcept {
-            return timer.labelStorage_.get_allocator().resource();
-        }
-
-        static inline const std::pmr::monotonic_buffer_resource* localLabelResourceForTests(const ScopeTimer& timer) noexcept {
-            return &timer.labelResource_;
+        static inline bool labelUsesHeapForTests(const ScopeTimer& timer) noexcept {
+            return !timer.labelHeapStorage_.empty() && timer.label_.data() == timer.labelHeapStorage_.data();
         }
 
         /**
