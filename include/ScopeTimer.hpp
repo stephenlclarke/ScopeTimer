@@ -181,8 +181,14 @@ namespace xyzzy::scopetimer {
             explicit LabelArg(const char (&literal)[N]) noexcept
                 : storage_(literal, N ? N - 1 : 0) {}
 
-            explicit LabelArg(const char* s) noexcept
-                : storage_(s && *s ? std::string_view{s} : std::string_view{"ScopeTimer"}) {}
+            explicit LabelArg(const char* s) {
+                if (s && *s) {
+                    owned_ = s;           // copy to guarantee lifetime safety
+                    ownsStorage_ = true;
+                } else {
+                    storage_ = std::string_view{"ScopeTimer"};
+                }
+            }
 
             explicit LabelArg(std::string_view sv)
                 : storage_(sv) {}
@@ -586,25 +592,18 @@ namespace xyzzy::scopetimer {
         static void defaultSinkFlush() noexcept;
         static void noopSinkFlush() noexcept;
 
-        using SinkWriteFn = std::function<void(const char*, std::size_t)>;
-        using SinkFlushFn = std::function<void()>;
+        using SinkWriteFn = void(*)(const char*, std::size_t) noexcept;
+        using SinkFlushFn = void(*)() noexcept;
 
-        static inline SinkWriteFn sinkWriteFn_{
-            [](const char* data, std::size_t len) {
-                defaultSinkWrite(data, len);
-            }
-        };
-        static inline SinkFlushFn sinkFlushFn_{
-            [] {
-                defaultSinkFlush();
-            }
-        };
+        static inline SinkWriteFn sinkWriteFn_{&defaultSinkWrite};
+        static inline SinkFlushFn sinkFlushFn_{&defaultSinkFlush};
 
+        // Test-only sink swap; safe when called during single-threaded setup/teardown.
         static inline void setLogSinkForTests(SinkWriteFn writeFn, SinkFlushFn flushFn) noexcept {
             if (writeFn) {
                 closeLogFd();
-                sinkWriteFn_ = std::move(writeFn);
-                sinkFlushFn_ = flushFn ? std::move(flushFn) : SinkFlushFn{noopSinkFlush};
+                sinkWriteFn_ = writeFn;
+                sinkFlushFn_ = flushFn ? flushFn : &noopSinkFlush;
             } else {
                 closeLogFd();
                 sinkWriteFn_ = defaultSinkWrite;
@@ -653,7 +652,15 @@ namespace xyzzy::scopetimer {
                 return false;
             }
 
-            if (int newFd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644); newFd >= 0) {
+            int openFlags = O_CREAT | O_WRONLY | O_APPEND;
+#ifdef O_CLOEXEC
+            openFlags |= O_CLOEXEC;
+#endif
+
+            if (int newFd = ::open(path.c_str(), openFlags, 0644); newFd >= 0) {
+#ifndef O_CLOEXEC
+                (void)::fcntl(newFd, F_SETFD, FD_CLOEXEC);
+#endif
                 fd = newFd;
                 lastAttemptFailed = false;
                 lastFailedPath.clear();
@@ -903,7 +910,11 @@ inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, st
 inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {
     int fd = logFd();
     if (fd >= 0) {
+#if defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO >= 0 && !defined(__APPLE__)
+        ::fdatasync(fd);
+#else
         ::fsync(fd);
+#endif
     }
 }
 

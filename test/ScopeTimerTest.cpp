@@ -34,6 +34,7 @@
 #include <dirent.h>
 #include <fstream>
 #include <cerrno>
+#include <fcntl.h>
 
 using namespace std::chrono_literals;
 
@@ -71,6 +72,7 @@ public:
         test_ensure_log_fd_reuses_existing_handle();
         test_default_sink_write_handles_closed_fd();
         test_label_storage_uses_local_buffer();
+        test_labelarg_pointer_copies_input();
         test_threadlocal_format_buffers_reused();
         test_scope_timer_string_view_ctor();
         test_looped_work();
@@ -89,6 +91,7 @@ public:
         test_logdir_edge_cases_child_process();
         test_logfile_null_branch();
         test_logfile_failure_cache_branch();
+        test_log_fd_has_cloexec();
 
         if (s_failures == 0) {
             std::fprintf(stdout, "All ScopeTimer tests passed.\n");
@@ -457,14 +460,14 @@ private:
 
     static void test_labelarg_literal_and_pointer_variants() {
         verifyLabelResult("string literal", "tests:label:literal",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{"tests:label:literal"});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{"tests:label:literal"});
 
         verifyLabelResult("string literal empty", "ScopeTimer",
                           false, ::xyzzy::scopetimer::detail::LabelArg{""});
 
         const char* ptr = "tests:label:ptr";
         verifyLabelResult("const char* pointer", "tests:label:ptr",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{ptr});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{ptr});
 
         const char* emptyPtr = "";
         verifyLabelResult("const char* empty string", "ScopeTimer",
@@ -476,6 +479,16 @@ private:
 
         verifyLabelResult("default LabelArg", "ScopeTimer",
                           false, ::xyzzy::scopetimer::detail::LabelArg{});
+    }
+
+    static void test_labelarg_pointer_copies_input() {
+        std::string src = "tests:label:ephemeral";
+        const char* ptr = src.c_str();
+        ::xyzzy::scopetimer::detail::LabelArg arg{ptr};
+        src.clear(); // the original storage now differs; LabelArg should have copied
+        auto data = std::move(arg).toLabelData();
+        expect(data.storage == "tests:label:ephemeral", "LabelArg copies const char* to owned storage");
+        expect(data.view == data.storage, "LabelArg const char* view references owned storage");
     }
 
     static void test_parse_elapsed_millis_invalid_inputs() {
@@ -731,6 +744,22 @@ private:
 
         ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
         ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+    }
+
+    static void test_log_fd_has_cloexec() {
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+
+        bool opened = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
+        expect(opened, "ensureLogFdOpen opens fd for cloexec test");
+
+        int fd = ::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests();
+        int flags = ::fcntl(fd, F_GETFD);
+        expect(flags != -1 && (flags & FD_CLOEXEC), "log fd has FD_CLOEXEC set");
+
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
     }
 
     // --------- bootstrapping helpers ---------
