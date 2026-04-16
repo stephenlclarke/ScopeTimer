@@ -27,16 +27,28 @@ PROFILE_DEFS: list[dict[str, Any]] = [
     {
         "name": "standard_default",
         "label": "Standard timer, default sink",
+        "description": (
+            "Baseline ScopeTimer cost with the normal synchronous sink and "
+            "wall-clock timestamps enabled."
+        ),
         "env": {},
     },
     {
         "name": "standard_walltime_off",
         "label": "Standard timer, wall time disabled",
+        "description": (
+            "Standard timer with `SCOPE_TIMER_WALLTIME=0` so the report shows "
+            "the cost of dropping `start=` and `end=` timestamp formatting."
+        ),
         "env": {"SCOPE_TIMER_WALLTIME": "0"},
     },
     {
         "name": "buffered_single_thread",
         "label": "Standard timer, buffered sink",
+        "description": (
+            "Single-thread run with the thread-buffered sink enabled to show "
+            "how much caller-thread write overhead falls when flushes are batched."
+        ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
             "SCOPE_TIMER_WALLTIME": "0",
@@ -45,6 +57,10 @@ PROFILE_DEFS: list[dict[str, Any]] = [
     {
         "name": "buffered_threaded",
         "label": "Standard timer, buffered sink (threaded stress)",
+        "description": (
+            "Multi-threaded buffered run that stresses contention and cross-thread "
+            "flush behavior under the standard timer format."
+        ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
             "SCOPE_TIMER_BENCH_SINK_BYTES": SINK_BYTES_PLACEHOLDER,
@@ -55,6 +71,10 @@ PROFILE_DEFS: list[dict[str, Any]] = [
     {
         "name": "async_threaded",
         "label": "Standard timer, async sink",
+        "description": (
+            "Multi-threaded run with the async sink so flush work moves to the "
+            "background writer instead of the calling thread."
+        ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "ASYNC",
             "SCOPE_TIMER_BENCH_SINK_BYTES": SINK_BYTES_PLACEHOLDER,
@@ -65,6 +85,10 @@ PROFILE_DEFS: list[dict[str, Any]] = [
     {
         "name": "hotpath_async_threaded",
         "label": "Hot-path timer, async sink",
+        "description": (
+            "Lowest-overhead profile: hot-path timer format plus the async sink, "
+            "measured under the threaded stress workload."
+        ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "ASYNC",
             "SCOPE_TIMER_BENCH_SINK_BYTES": SINK_BYTES_PLACEHOLDER,
@@ -244,7 +268,20 @@ def render_report(history: dict[str, Any]) -> str:
         "matrix, appends `benchmarks/demo_benchmark_history.json`, and refreshes",
         "this file with the latest snapshot.",
         "",
+        "## Profile meanings",
+        "",
+        "| Profile | Meaning |",
+        "| --- | --- |",
     ]
+
+    for profile_def in PROFILE_DEFS:
+        lines.append(
+            "| "
+            f"{profile_def['label']} | "
+            f"{profile_def['description']} |"
+        )
+
+    lines.append("")
 
     if not entries:
         lines.extend(

@@ -186,7 +186,7 @@ set(DEMO_BENCH_REPORT_FILE "${CMAKE_SOURCE_DIR}/BENCHMARK.md" CACHE FILEPATH
     "Markdown report updated by the benchmark matrix target")
 set(DOCS_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-docs" CACHE PATH
     "Dedicated build directory used by the automatic markdown refresh target")
-option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md, TESTS.md, and BENCHMARK.md during the default build" ON)
+option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md and TESTS.md during the default build" ON)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 if(Python3_Interpreter_FOUND)
@@ -236,38 +236,22 @@ if(Python3_Interpreter_FOUND)
 
   if(AUTO_REFRESH_DOCS)
     add_custom_target(docs_refresh ALL
-      COMMENT "Regenerate BUILD.md, TESTS.md, and BENCHMARK.md from live build artifacts"
+      COMMENT "Regenerate BUILD.md and TESTS.md from live build artifacts"
       COMMAND ${Python3_EXECUTABLE}
               ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
               --docs-build-dir ${DOCS_BUILD_DIR}
-              --bench-build-dir ${DEMO_BENCH_BUILD_DIR}
               --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
               --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
-              --benchmark-history-file ${DEMO_BENCH_HISTORY_FILE}
-              --benchmark-report-file ${DEMO_BENCH_REPORT_FILE}
-              --bench-iterations ${DEMO_BENCH_ITERATIONS}
-              --bench-runs ${DEMO_BENCH_RUNS}
-              --bench-threads ${DEMO_BENCH_THREADS}
-              --bench-sink-bytes ${DEMO_BENCH_SINK_BYTES}
-              --bench-cxx-flags=${DEMO_BENCH_CXX_FLAGS}
       VERBATIM
     )
   else()
     add_custom_target(docs_refresh
-      COMMENT "Regenerate BUILD.md, TESTS.md, and BENCHMARK.md from live build artifacts"
+      COMMENT "Regenerate BUILD.md and TESTS.md from live build artifacts"
       COMMAND ${Python3_EXECUTABLE}
               ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
               --docs-build-dir ${DOCS_BUILD_DIR}
-              --bench-build-dir ${DEMO_BENCH_BUILD_DIR}
               --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
               --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
-              --benchmark-history-file ${DEMO_BENCH_HISTORY_FILE}
-              --benchmark-report-file ${DEMO_BENCH_REPORT_FILE}
-              --bench-iterations ${DEMO_BENCH_ITERATIONS}
-              --bench-runs ${DEMO_BENCH_RUNS}
-              --bench-threads ${DEMO_BENCH_THREADS}
-              --bench-sink-bytes ${DEMO_BENCH_SINK_BYTES}
-              --bench-cxx-flags=${DEMO_BENCH_CXX_FLAGS}
       VERBATIM
     )
   endif()

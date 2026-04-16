@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-Regenerate BUILD.md, TESTS.md, and BENCHMARK.md from live build artifacts.
+Regenerate BUILD.md and TESTS.md from live build artifacts.
 
-This script is intended to run from CMake so the checked-in markdown stays in
-sync with the current build, test, and benchmark behavior.
+BENCHMARK.md is refreshed by the dedicated benchmark targets rather than the
+default build so local builds stay fast.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -36,16 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=str(repo_root))
     parser.add_argument("--docs-build-dir", required=True)
-    parser.add_argument("--bench-build-dir", required=True)
     parser.add_argument("--build-doc", required=True)
     parser.add_argument("--tests-doc", required=True)
-    parser.add_argument("--benchmark-history-file", required=True)
-    parser.add_argument("--benchmark-report-file", required=True)
-    parser.add_argument("--bench-iterations", type=int, required=True)
-    parser.add_argument("--bench-runs", type=int, required=True)
-    parser.add_argument("--bench-threads", type=int, required=True)
-    parser.add_argument("--bench-sink-bytes", type=int, required=True)
-    parser.add_argument("--bench-cxx-flags", required=True)
     return parser.parse_args()
 
 
@@ -194,7 +184,9 @@ def refresh_build_doc(
         "`Demo` is the educational example app. The dedicated overhead workload",
         "now lives in `example/Benchmark.cpp`.",
         "",
-        "To reproduce the benchmark-app overhead run from CMake, execute:",
+        "Benchmarks are intentionally excluded from the default",
+        "`cmake --build` path so local builds stay fast. Run them explicitly",
+        "with:",
         "",
         "```bash",
         "cmake -S . -B build-review",
@@ -206,6 +198,10 @@ def refresh_build_doc(
         "disabled and `-O2` enabled, then build and benchmark the `Benchmark`",
         "executable with `SCOPE_TIMER=0` and `SCOPE_TIMER=1` against the",
         "CPU-bound `hotpath-bench` scenario.",
+        "",
+        "Pull request CI runs `demo_benchmark_matrix` automatically for PR",
+        "open and update events, then uploads the refreshed benchmark report",
+        "as an artifact.",
         "",
         "The human-readable benchmark results now live in",
         "[`BENCHMARK.md`](BENCHMARK.md). That file is refreshed automatically by",
@@ -347,90 +343,15 @@ def refresh_tests_doc(
 
     tests_doc.write_text("\n".join(lines), encoding="utf-8")
 
-
-def refresh_benchmark_doc(
-    repo_root: Path,
-    bench_build_dir: Path,
-    history_file: Path,
-    report_file: Path,
-    *,
-    iterations: int,
-    runs: int,
-    threads: int,
-    sink_bytes: int,
-    cxx_flags: str,
-) -> None:
-    remove_tree(bench_build_dir)
-
-    run_command(
-        [
-            "cmake",
-            "-S",
-            str(repo_root),
-            "-B",
-            str(bench_build_dir),
-            "-DENABLE_COVERAGE=OFF",
-            "-DENABLE_SONAR=OFF",
-            "-DAUTO_REFRESH_DOCS=OFF",
-            f"-DCMAKE_CXX_FLAGS={cxx_flags}",
-        ],
-        cwd=repo_root,
-    )
-    run_command(
-        ["cmake", "--build", str(bench_build_dir), "--target", "Benchmark", "-j"],
-        cwd=repo_root,
-    )
-    run_command(
-        [
-            sys.executable,
-            str(repo_root / "scripts" / "record_demo_benchmarks.py"),
-            "--binary",
-            str(bench_build_dir / "Benchmark"),
-            "--scenario",
-            "hotpath-bench",
-            "--iterations",
-            str(iterations),
-            "--runs",
-            str(runs),
-            "--threads",
-            str(threads),
-            "--sink-bytes",
-            str(sink_bytes),
-            "--history-file",
-            str(history_file),
-            "--report-file",
-            str(report_file),
-            "--build-dir",
-            str(bench_build_dir),
-            f"--cxx-flags={cxx_flags}",
-        ],
-        cwd=repo_root,
-    )
-
-
 def main() -> int:
     args = parse_args()
     repo_root = Path(args.repo_root).resolve()
     docs_build_dir = Path(args.docs_build_dir).resolve()
-    bench_build_dir = Path(args.bench_build_dir).resolve()
     build_doc = Path(args.build_doc).resolve()
     tests_doc = Path(args.tests_doc).resolve()
-    history_file = Path(args.benchmark_history_file).resolve()
-    report_file = Path(args.benchmark_report_file).resolve()
 
     refresh_build_doc(repo_root, docs_build_dir, build_doc)
     refresh_tests_doc(repo_root, docs_build_dir, tests_doc)
-    refresh_benchmark_doc(
-        repo_root,
-        bench_build_dir,
-        history_file,
-        report_file,
-        iterations=args.bench_iterations,
-        runs=args.bench_runs,
-        threads=args.bench_threads,
-        sink_bytes=args.bench_sink_bytes,
-        cxx_flags=args.bench_cxx_flags,
-    )
     return 0
 
 

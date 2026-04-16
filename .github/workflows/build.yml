@@ -3,8 +3,14 @@ name: Build & SonarQube
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
   pull_request:
     types: [ opened, synchronize, reopened ]
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
 
 permissions:
   contents: read
@@ -26,11 +32,11 @@ jobs:
       CTEST_OUTPUT_ON_FAILURE: "1"
 
     steps:
-      - name: Install prerequisites (cmake, ninja, coverage tools, git, ca-certs, unzip)
+      - name: Install prerequisites (cmake, ninja, coverage tools, git, ca-certs, unzip, python3)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake ninja-build gcovr lcov git ca-certificates unzip jq
+            cmake ninja-build gcovr lcov git ca-certificates unzip jq python3
           update-ca-certificates
 
       - name: Checkout
@@ -97,3 +103,50 @@ jobs:
             --define sonar.projectKey=stephenlclarke_ScopeTimer
             --define sonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
             --define sonar.coverageReportPaths=build/sonarqube-coverage.xml
+
+  benchmarks:
+    name: GCC 15 • PR Benchmarks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    container:
+      image: gcc:15
+
+    steps:
+      - name: Install prerequisites (cmake, ninja, git, ca-certs, python3)
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            cmake ninja-build git ca-certificates python3
+          update-ca-certificates
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure benchmark driver build
+        env:
+          CC: gcc
+          CXX: g++
+        run: |
+          rm -rf build build-bench
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_COVERAGE=OFF \
+            -DENABLE_SONAR=OFF \
+            -DAUTO_REFRESH_DOCS=OFF \
+            -DCMAKE_C_COMPILER="${CC}" \
+            -DCMAKE_CXX_COMPILER="${CXX}"
+
+      - name: Run benchmark matrix
+        run: |
+          cmake --build build --target demo_benchmark_matrix -j"$(nproc)"
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-pr-${{ github.event.pull_request.number }}
+          path: |
+            BENCHMARK.md
+            benchmarks/demo_benchmark_history.json

@@ -18,6 +18,17 @@ cmake --build build-review --target demo_benchmark_matrix
 matrix, appends `benchmarks/demo_benchmark_history.json`, and refreshes
 this file with the latest snapshot.
 
+## Profile meanings
+
+| Profile | Meaning |
+| --- | --- |
+| Standard timer, default sink | Baseline ScopeTimer cost with the normal synchronous sink and wall-clock timestamps enabled. |
+| Standard timer, wall time disabled | Standard timer with `SCOPE_TIMER_WALLTIME=0` so the report shows the cost of dropping `start=` and `end=` timestamp formatting. |
+| Standard timer, buffered sink | Single-thread run with the thread-buffered sink enabled to show how much caller-thread write overhead falls when flushes are batched. |
+| Standard timer, buffered sink (threaded stress) | Multi-threaded buffered run that stresses contention and cross-thread flush behavior under the standard timer format. |
+| Standard timer, async sink | Multi-threaded run with the async sink so flush work moves to the background writer instead of the calling thread. |
+| Hot-path timer, async sink | Lowest-overhead profile: hot-path timer format plus the async sink, measured under the threaded stress workload. |
+
 ## Current benchmark snapshot
 
 - Recorded at: `2026-04-16T10:45:23+00:00`
