@@ -22,41 +22,47 @@
 # -----------------------------------------------------------------------------
 
 cmake_minimum_required(VERSION 3.16)
-project(ScopeTimer LANGUAGES CXX)
 
-# --- GCC-15 toolchain defaults (local + CI) ------------------------------
-# If the user hasn't explicitly set CC/CXX/GCOV, try to default to GCC 15.
-# This helps ensure gcovr coverage is non-zero (AppleClang won't produce .gcda).
-# These environment variables are only set if currently unset.
-if(NOT DEFINED ENV{CC} AND NOT CMAKE_C_COMPILER)
+# --- Prefer GCC by default (for coverage) --------------------------------
+# Set CC/CXX/GCOV before the project() call so CMake configures with GCC
+# unless the user has explicitly chosen something else.
+if(NOT DEFINED ENV{CC})
   find_program(_GCC15 gcc-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
   if(_GCC15)
     set(ENV{CC} "${_GCC15}")
-    message(STATUS "CC not set; defaulting to: $ENV{CC}")
+  else()
+    find_program(_GCC gcc PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
+    if(_GCC)
+      set(ENV{CC} "${_GCC}")
+    endif()
   endif()
 endif()
-if(NOT DEFINED ENV{CXX} AND NOT CMAKE_CXX_COMPILER)
+if(NOT DEFINED ENV{CXX})
   find_program(_GPP15 g++-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
   if(_GPP15)
     set(ENV{CXX} "${_GPP15}")
-    message(STATUS "CXX not set; defaulting to: $ENV{CXX}")
+  else()
+    find_program(_GPP g++ PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
+    if(_GPP)
+      set(ENV{CXX} "${_GPP}")
+    endif()
   endif()
 endif()
 if(NOT DEFINED ENV{GCOV})
   find_program(_GCOV15 gcov-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
   if(_GCOV15)
     set(ENV{GCOV} "${_GCOV15}")
-    message(STATUS "GCOV not set; defaulting to: $ENV{GCOV}")
   endif()
 endif()
 
-# If CMake compilers are still unset, adopt the chosen env defaults now.
 if(NOT CMAKE_C_COMPILER AND DEFINED ENV{CC})
   set(CMAKE_C_COMPILER "$ENV{CC}" CACHE FILEPATH "C compiler" FORCE)
 endif()
 if(NOT CMAKE_CXX_COMPILER AND DEFINED ENV{CXX})
   set(CMAKE_CXX_COMPILER "$ENV{CXX}" CACHE FILEPATH "C++ compiler" FORCE)
 endif()
+
+project(ScopeTimer LANGUAGES CXX)
 
 # --- Basics ---------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)
@@ -66,7 +72,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Demo app -------------------------------------------------------------
-# Use example/Demo.cpp if present, else ./Demo.cpp
+# Use example/Demo.cpp if present, else ./Demo.cpp.
 if(EXISTS "${CMAKE_SOURCE_DIR}/example/Demo.cpp")
   set(DEMO_SRC example/Demo.cpp)
 elseif(EXISTS "${CMAKE_SOURCE_DIR}/Demo.cpp")
@@ -78,11 +84,25 @@ endif()
 add_executable(Demo ${DEMO_SRC})
 target_include_directories(Demo PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# --- Benchmark app --------------------------------------------------------
+# Keep the dedicated benchmark workload separate from the educational demo.
+if(EXISTS "${CMAKE_SOURCE_DIR}/example/Benchmark.cpp")
+  set(BENCHMARK_SRC example/Benchmark.cpp)
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/Benchmark.cpp")
+  set(BENCHMARK_SRC Benchmark.cpp)
+else()
+  message(FATAL_ERROR "No Benchmark.cpp found (looked in example/ and project root)")
+endif()
+
+add_executable(Benchmark ${BENCHMARK_SRC})
+target_include_directories(Benchmark PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # --- Unit tests (optional) -------------------------------------------------
 set(TEST_TARGET "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/test/ScopeTimerTest.cpp")
   add_executable(scopetimer_tests test/ScopeTimerTest.cpp)
   target_include_directories(scopetimer_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  target_compile_definitions(scopetimer_tests PRIVATE SCOPETIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(scopetimer_tests PRIVATE --coverage -O0 -g)
     target_link_options(scopetimer_tests PRIVATE --coverage)
@@ -96,7 +116,32 @@ enable_testing()
 
 if(TARGET Demo)
   add_test(NAME run_demo COMMAND Demo)
+  add_test(NAME run_demo_iterations COMMAND Demo --iterations=1)
+  add_test(NAME run_demo_help COMMAND Demo --help)
   set_tests_properties(run_demo PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  set_tests_properties(run_demo_iterations PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  set_tests_properties(run_demo_help PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif()
+
+if(TARGET Benchmark)
+  add_test(NAME run_benchmark_default COMMAND Benchmark --iterations=1 --scenario=hotpath-bench)
+  add_test(NAME run_benchmark_help COMMAND Benchmark --help)
+  add_test(NAME run_benchmark_buffered_hotpath COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_async COMMAND Benchmark --iterations=1)
+  set_tests_properties(run_benchmark_default PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  set_tests_properties(run_benchmark_help PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  set_tests_properties(
+    run_benchmark_buffered_hotpath
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=BUFFERED;SCOPE_TIMER_BENCH_TIMER=HOTPATH;SCOPE_TIMER_BENCH_THREADS=2"
+  )
+  set_tests_properties(
+    run_benchmark_async
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=ASYNC"
+  )
 endif()
 
 if(TARGET scopetimer_tests)
@@ -104,19 +149,177 @@ if(TARGET scopetimer_tests)
   set_tests_properties(run_scopetimer_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
 
+# --- Performance comparison helper ---------------------------------------
+if(TARGET scopetimer_tests)
+  add_custom_target(perf_runs
+    COMMENT "Run performance tests: disabled (SCOPE_TIMER=0), default sink, thread-buffered sink"
+    COMMAND ${CMAKE_COMMAND} -E echo "=== Perf: timers disabled \\(SCOPE_TIMER=0, default sink\\) ==="
+    COMMAND ${CMAKE_COMMAND} -E time ${CMAKE_COMMAND} -E env SCOPE_TIMER=0 SCOPETIMER_PERF_MODE=DEFAULT_ONLY ${CMAKE_BINARY_DIR}/scopetimer_tests
+    COMMAND ${CMAKE_COMMAND} -E echo "=== Perf: timers enabled, default sink ==="
+    COMMAND ${CMAKE_COMMAND} -E time ${CMAKE_COMMAND} -E env SCOPE_TIMER=1 SCOPETIMER_PERF_MODE=DEFAULT_ONLY ${CMAKE_BINARY_DIR}/scopetimer_tests
+    COMMAND ${CMAKE_COMMAND} -E echo "=== Perf: timers enabled, thread-buffered sink ==="
+    COMMAND ${CMAKE_COMMAND} -E time ${CMAKE_COMMAND} -E env SCOPE_TIMER=1 SCOPETIMER_PERF_MODE=BUFFERED_ONLY ${CMAKE_BINARY_DIR}/scopetimer_tests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DEPENDS scopetimer_tests
+  )
+endif()
+
+# --- Benchmark helper -----------------------------------------------------
+# Reproduces the dedicated benchmark-app enabled-vs-disabled ScopeTimer measurement
+# in a dedicated non-coverage build tree so gcov instrumentation does not skew
+# the results.
+set(DEMO_BENCH_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-bench" CACHE PATH
+    "Dedicated build directory used by the benchmark target")
+set(DEMO_BENCH_ITERATIONS "5" CACHE STRING
+    "Number of Benchmark iterations per benchmark run")
+set(DEMO_BENCH_RUNS "8" CACHE STRING
+    "Number of alternating enabled/disabled benchmark runs")
+set(DEMO_BENCH_CXX_FLAGS "-O2" CACHE STRING
+    "Extra C++ flags used by the dedicated benchmark build")
+set(DEMO_BENCH_THREADS "4" CACHE STRING
+    "Worker thread count used by the benchmark matrix target")
+set(DEMO_BENCH_SINK_BYTES "4096" CACHE STRING
+    "Flush threshold used by buffered and async benchmark matrix runs")
+set(DEMO_BENCH_HISTORY_FILE "${CMAKE_SOURCE_DIR}/benchmarks/demo_benchmark_history.json" CACHE FILEPATH
+    "History file updated by the benchmark matrix target")
+set(DEMO_BENCH_REPORT_FILE "${CMAKE_SOURCE_DIR}/BENCHMARK.md" CACHE FILEPATH
+    "Markdown report updated by the benchmark matrix target")
+set(DOCS_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-docs" CACHE PATH
+    "Dedicated build directory used by the automatic markdown refresh target")
+option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md, TESTS.md, and BENCHMARK.md during the default build" ON)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
+if(Python3_Interpreter_FOUND)
+  add_custom_target(demo_benchmark
+    COMMENT "Build a clean optimized Benchmark binary and benchmark ScopeTimer enabled vs disabled"
+    COMMAND ${CMAKE_COMMAND}
+            -S ${CMAKE_SOURCE_DIR}
+            -B ${DEMO_BENCH_BUILD_DIR}
+            -DENABLE_COVERAGE=OFF
+            -DENABLE_SONAR=OFF
+            -DAUTO_REFRESH_DOCS=OFF
+            -DCMAKE_CXX_FLAGS=${DEMO_BENCH_CXX_FLAGS}
+    COMMAND ${CMAKE_COMMAND} --build ${DEMO_BENCH_BUILD_DIR} --target Benchmark -j
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/benchmark_demo.py
+            --binary ${DEMO_BENCH_BUILD_DIR}/Benchmark
+            --scenario hotpath-bench
+            --iterations ${DEMO_BENCH_ITERATIONS}
+            --runs ${DEMO_BENCH_RUNS}
+    VERBATIM
+  )
+
+  add_custom_target(demo_benchmark_matrix
+    COMMENT "Run the reproducible ScopeTimer optimization benchmark matrix and record the results"
+    COMMAND ${CMAKE_COMMAND}
+            -S ${CMAKE_SOURCE_DIR}
+            -B ${DEMO_BENCH_BUILD_DIR}
+            -DENABLE_COVERAGE=OFF
+            -DENABLE_SONAR=OFF
+            -DAUTO_REFRESH_DOCS=OFF
+            -DCMAKE_CXX_FLAGS=${DEMO_BENCH_CXX_FLAGS}
+    COMMAND ${CMAKE_COMMAND} --build ${DEMO_BENCH_BUILD_DIR} --target Benchmark -j
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/record_demo_benchmarks.py
+            --binary ${DEMO_BENCH_BUILD_DIR}/Benchmark
+            --scenario hotpath-bench
+            --iterations ${DEMO_BENCH_ITERATIONS}
+            --runs ${DEMO_BENCH_RUNS}
+            --threads ${DEMO_BENCH_THREADS}
+            --sink-bytes ${DEMO_BENCH_SINK_BYTES}
+            --history-file ${DEMO_BENCH_HISTORY_FILE}
+            --report-file ${DEMO_BENCH_REPORT_FILE}
+            --build-dir ${DEMO_BENCH_BUILD_DIR}
+            --cxx-flags=${DEMO_BENCH_CXX_FLAGS}
+    VERBATIM
+  )
+
+  if(AUTO_REFRESH_DOCS)
+    add_custom_target(docs_refresh ALL
+      COMMENT "Regenerate BUILD.md, TESTS.md, and BENCHMARK.md from live build artifacts"
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
+              --docs-build-dir ${DOCS_BUILD_DIR}
+              --bench-build-dir ${DEMO_BENCH_BUILD_DIR}
+              --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
+              --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
+              --benchmark-history-file ${DEMO_BENCH_HISTORY_FILE}
+              --benchmark-report-file ${DEMO_BENCH_REPORT_FILE}
+              --bench-iterations ${DEMO_BENCH_ITERATIONS}
+              --bench-runs ${DEMO_BENCH_RUNS}
+              --bench-threads ${DEMO_BENCH_THREADS}
+              --bench-sink-bytes ${DEMO_BENCH_SINK_BYTES}
+              --bench-cxx-flags=${DEMO_BENCH_CXX_FLAGS}
+      VERBATIM
+    )
+  else()
+    add_custom_target(docs_refresh
+      COMMENT "Regenerate BUILD.md, TESTS.md, and BENCHMARK.md from live build artifacts"
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
+              --docs-build-dir ${DOCS_BUILD_DIR}
+              --bench-build-dir ${DEMO_BENCH_BUILD_DIR}
+              --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
+              --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
+              --benchmark-history-file ${DEMO_BENCH_HISTORY_FILE}
+              --benchmark-report-file ${DEMO_BENCH_REPORT_FILE}
+              --bench-iterations ${DEMO_BENCH_ITERATIONS}
+              --bench-runs ${DEMO_BENCH_RUNS}
+              --bench-threads ${DEMO_BENCH_THREADS}
+              --bench-sink-bytes ${DEMO_BENCH_SINK_BYTES}
+              --bench-cxx-flags=${DEMO_BENCH_CXX_FLAGS}
+      VERBATIM
+    )
+  endif()
+else()
+  add_custom_target(demo_benchmark
+    COMMENT "ERROR: Python 3 is required for the benchmark helper"
+    COMMAND ${CMAKE_COMMAND} -E echo "[demo_benchmark] ERROR: Python 3 interpreter not found."
+    COMMAND ${CMAKE_COMMAND} -E false
+    VERBATIM
+  )
+
+  add_custom_target(demo_benchmark_matrix
+    COMMENT "ERROR: Python 3 is required for the benchmark matrix helper"
+    COMMAND ${CMAKE_COMMAND} -E echo "[demo_benchmark_matrix] ERROR: Python 3 interpreter not found."
+    COMMAND ${CMAKE_COMMAND} -E false
+    VERBATIM
+  )
+
+  if(AUTO_REFRESH_DOCS)
+    add_custom_target(docs_refresh ALL
+      COMMENT "ERROR: Python 3 is required for automatic markdown refresh"
+      COMMAND ${CMAKE_COMMAND} -E echo "[docs_refresh] ERROR: Python 3 interpreter not found."
+      COMMAND ${CMAKE_COMMAND} -E false
+      VERBATIM
+    )
+  else()
+    add_custom_target(docs_refresh
+      COMMENT "ERROR: Python 3 is required for automatic markdown refresh"
+      COMMAND ${CMAKE_COMMAND} -E echo "[docs_refresh] ERROR: Python 3 interpreter not found."
+      COMMAND ${CMAKE_COMMAND} -E false
+      VERBATIM
+    )
+  endif()
+endif()
+
 # Link threads if available (portable)
 find_package(Threads)
 if(Threads_FOUND)
   target_link_libraries(Demo PRIVATE Threads::Threads)
+  target_link_libraries(Benchmark PRIVATE Threads::Threads)
 endif()
 
 # --- Coverage (GCC + gcovr) ----------------------------------------------
 # Keep it minimal: GCC only. Generate SonarQube XML + HTML (viewable locally).
 option(ENABLE_COVERAGE "Enable GCC gcov coverage flags for Demo" ON)
+find_program(GCOVR_EXECUTABLE NAMES gcovr)
 if(ENABLE_COVERAGE)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(Demo PRIVATE --coverage -O0 -g)
     target_link_options(Demo PRIVATE --coverage)
+    target_compile_options(Benchmark PRIVATE --coverage -O0 -g)
+    target_link_options(Benchmark PRIVATE --coverage)
     if(TARGET scopetimer_tests)
       target_compile_options(scopetimer_tests PRIVATE --coverage -O0 -g)
       target_link_options(scopetimer_tests PRIVATE --coverage)
@@ -126,25 +329,32 @@ if(ENABLE_COVERAGE)
   endif()
 endif()
 
-find_program(GCOVR_EXECUTABLE NAMES gcovr REQUIRED)
 # Auto-pick a gcov that matches the GCC in use (e.g. gcov-15).
 # Honor explicit GCOV env if supplied (e.g., gcov-15). We'll skip auto-detect if set.
-if(DEFINED ENV{GCOV} AND NOT "$ENV{GCOV}" STREQUAL "")
-  set(GCOV_EXE "$ENV{GCOV}")
-  message(STATUS "Using GCOV from environment: ${GCOV_EXE}")
-endif()
 set(_GCC_MAJOR "")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   if(CMAKE_CXX_COMPILER_VERSION)
     string(REGEX MATCH "^[0-9]+" _GCC_MAJOR "${CMAKE_CXX_COMPILER_VERSION}")
   endif()
 endif()
-if(NOT GCOV_EXE)
-  if(_GCC_MAJOR)
-    find_program(GCOV_EXE NAMES gcov-${_GCC_MAJOR} gcov REQUIRED)
-  else()
-    find_program(GCOV_EXE NAMES gcov REQUIRED)
+set(COVERAGE_READY OFF)
+if(ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND GCOVR_EXECUTABLE)
+  if(DEFINED ENV{GCOV} AND NOT "$ENV{GCOV}" STREQUAL "")
+    set(GCOV_EXE "$ENV{GCOV}")
+    message(STATUS "Using GCOV from environment: ${GCOV_EXE}")
   endif()
+  if(NOT GCOV_EXE)
+    if(_GCC_MAJOR)
+      find_program(GCOV_EXE NAMES gcov-${_GCC_MAJOR} gcov REQUIRED)
+    else()
+      find_program(GCOV_EXE NAMES gcov REQUIRED)
+    endif()
+  endif()
+  if(GCOV_EXE)
+    set(COVERAGE_READY ON)
+  endif()
+elseif(ENABLE_COVERAGE AND NOT GCOVR_EXECUTABLE)
+  message(STATUS "gcovr not found. Plain builds still work, but the 'coverage' and 'sonar_scan' targets require gcovr.")
 endif()
 
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/cmake")
@@ -156,27 +366,38 @@ if(gcda)
 endif()
 ")
 
-add_custom_target(coverage DEPENDS Demo ${TEST_TARGET}
-  COMMENT "Run tests once and generate gcovr reports (SonarQube XML + HTML)"
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
-  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_BINARY_DIR}/cmake/CleanGcda.cmake
-  COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-  COMMAND ${GCOVR_EXECUTABLE}
-          --gcov-executable ${GCOV_EXE}
-          --root ${CMAKE_SOURCE_DIR}
-          --object-directory ${CMAKE_BINARY_DIR}
-          --sonarqube ${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
-          --html-details ${CMAKE_BINARY_DIR}/coverage/index.html
-          --print-summary
-          --delete
-          --gcov-ignore-errors=no_working_dir_found
-          --exclude '.*_deps/.*'
-          --exclude '.*bw-output/.*'
-          --exclude '.*CMakeFiles/.*'
-          --exclude '.*build-wrapper-dump.json'
-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-  VERBATIM
-)
+if(COVERAGE_READY)
+  add_custom_target(coverage DEPENDS Demo Benchmark ${TEST_TARGET}
+    COMMENT "Run tests once and generate gcovr reports (SonarQube XML + HTML)"
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_BINARY_DIR}/cmake/CleanGcda.cmake
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+    COMMAND ${GCOVR_EXECUTABLE}
+            --gcov-executable ${GCOV_EXE}
+            --root ${CMAKE_SOURCE_DIR}
+            --object-directory ${CMAKE_BINARY_DIR}
+            --sonarqube ${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
+            --html-details ${CMAKE_BINARY_DIR}/coverage/index.html
+            --print-summary
+            --delete
+            --gcov-ignore-errors=no_working_dir_found
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
+            --exclude '.*_deps/.*'
+            --exclude '.*bw-output/.*'
+            --exclude '.*CMakeFiles/.*'
+            --exclude '.*build-wrapper-dump.json'
+            ${CMAKE_BINARY_DIR}
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    VERBATIM
+  )
+else()
+  add_custom_target(coverage
+    COMMENT "ERROR: coverage prerequisites missing — install gcovr and use a GNU compiler, or configure with -DENABLE_COVERAGE=OFF"
+    COMMAND ${CMAKE_COMMAND} -E echo "[coverage] ERROR: coverage requires gcovr plus a GNU compiler/toolchain."
+    COMMAND ${CMAKE_COMMAND} -E false
+    VERBATIM
+  )
+endif()
 
 # --- Sonar build-wrapper capture -----------------------------------------
 # The scanner configuration now lives entirely in sonar-project.properties.
@@ -320,8 +541,8 @@ endif()
 
 # --- Sonar scanner ---------------------------------------------------------
 # Runs sonar-scanner using sonar-project.properties at repo root.
-# Depends on coverage (for build/sonarqube-coverage.xml) and sonar_bw
-# (to ensure build/bw-output/compile_commands.json exists).
+# Depends on coverage and sonar_bw so the active build directory always
+# provides the compile database and SonarQube coverage report.
 function(_detect_or_install_scanner OUT_VAR)
   # 0) Prefer an installed scanner already on PATH
   find_program(_SC_EXE NAMES sonar-scanner sonar-scanner.bat)
@@ -414,6 +635,9 @@ if(SONAR_SCANNER_EXECUTABLE)
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target sonar_bw
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target coverage
     COMMAND ${SONAR_SCANNER_EXECUTABLE}
+            --define sonar.projectBaseDir=${CMAKE_SOURCE_DIR}
+            --define sonar.cfamily.compile-commands=${SONAR_BW_OUT}/compile_commands.json
+            --define sonar.coverageReportPaths=${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     VERBATIM
   )

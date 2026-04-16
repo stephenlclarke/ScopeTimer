@@ -33,6 +33,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <fstream>
+#include <iterator>
 #include <cerrno>
 #include <fcntl.h>
 
@@ -67,7 +68,10 @@ public:
         test_labelarg_owned_to_labeldata();
         test_log_directory_caching();
         test_memory_sink_captures_output();
+        test_memory_sink_output_is_plain_text();
         test_memory_sink_without_flush();
+        test_long_log_line_truncates_but_still_emits();
+        test_summarize_script_handles_nanos();
         test_default_sink_write_short_circuits();
         test_ensure_log_fd_reuses_existing_handle();
         test_default_sink_write_handles_closed_fd();
@@ -81,10 +85,18 @@ public:
         test_env_format_unset_and_empty();
         test_empty_label();
         test_seconds_format_branch();
+        test_thread_buffered_sink_flushes_on_disable();
+        test_thread_buffered_sink_flushes_on_thread_exit();
+        test_async_sink_flushes_on_disable();
+        test_hot_path_timer_emits_compact_line();
+        test_performance_overhead();
         test_fmt_auto_seconds_branch();
         test_fmt_auto_nanos_branch();
         test_finalize_snprintf_result_branches();
         test_disabled_via_env_child_process();
+        test_thread_buffered_sink_flushes_on_process_exit();
+        test_async_sink_flushes_on_process_exit();
+        test_walltime_disable_omits_timestamps();
         test_disabled_case_insensitivity_child_process();
         test_bad_env_values_child_process();
         test_flushN_variants_child_process();
@@ -112,6 +124,15 @@ private:
 
     static inline void busyFor(std::chrono::microseconds us) {
         std::this_thread::sleep_for(us);
+    }
+
+    template <typename Fn>
+    static std::chrono::nanoseconds measureLoopDuration(int iterations, Fn&& fn) {
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < iterations; ++i) {
+            fn();
+        }
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start);
     }
 
     static void verifyLabelResult(const char* scenario, std::string_view expected, bool expectLocal, ::xyzzy::scopetimer::detail::LabelArg arg) {
@@ -183,6 +204,21 @@ private:
         }
         out += "'";
         return out;
+    }
+
+    static std::string runShellCommandCapture(const std::string& cmd) {
+        std::string output;
+        FILE* pipe = ::popen(cmd.c_str(), "r");
+        if (!pipe) {
+            return output;
+        }
+
+        char buffer[256];
+        while (::fgets(buffer, sizeof(buffer), pipe)) {
+            output += buffer;
+        }
+        (void)::pclose(pipe);
+        return output;
     }
 
     // ------------------ individual tests ------------------
@@ -300,7 +336,7 @@ private:
         data.view = std::string_view{};
         ::xyzzy::scopetimer::ScopeTimer timer("tests:labeldata:empty", std::move(data));
         expect(timer.label_ == std::string_view("ScopeTimer"), "LabelData empty view defaults to ScopeTimer");
-        expect(timer.labelStorage_.empty(), "LabelData empty view does not allocate storage");
+        expect(timer.labelHeapStorage_.empty(), "LabelData empty view does not allocate storage");
         timer.disabled_ = true;
     }
 
@@ -357,6 +393,18 @@ private:
                "custom log sink captured scope output");
     }
 
+    static void test_memory_sink_output_is_plain_text() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        {
+            SCOPE_TIMER("tests:memory_sink_plain_text");
+            busyFor(50us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(sinkCaptureBuffer().find('\0') == std::string::npos,
+               "custom log sink output has no embedded NUL bytes");
+    }
+
     static void test_memory_sink_without_flush() {
         sinkCaptureBuffer().clear();
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, nullptr);
@@ -367,6 +415,35 @@ private:
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
         expect(sinkCaptureBuffer().find("tests:memory_sink_no_flush") != std::string::npos,
                "custom log sink without flush still captures output");
+    }
+
+    static void test_long_log_line_truncates_but_still_emits() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        const std::string longLabel(700, 'L');
+        {
+            ::xyzzy::scopetimer::ScopeTimer timer("tests:long_label_scope", longLabel);
+            busyFor(20us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+
+        expect(!sinkCaptureBuffer().empty(), "overlong log line still emits output");
+        expect(sinkCaptureBuffer().find(std::string(32, 'L')) != std::string::npos,
+               "overlong log line preserves the leading label prefix");
+        expect(sinkCaptureBuffer().find('\0') == std::string::npos,
+               "overlong log line remains plain text");
+    }
+
+    static void test_summarize_script_handles_nanos() {
+        const std::string script = std::string(SCOPETIMER_SOURCE_DIR) + "/scripts/summarize_scope_times.sh";
+        const std::string cmd =
+            "printf '%s\\n' '[ScopeTimer] fn | elapsed=500ns' | " + shellEscape(script);
+        const std::string output = runShellCommandCapture(cmd);
+
+        expect(output.find("count=1") != std::string::npos,
+               "summarize_scope_times.sh counts nanosecond entries");
+        expect(output.find("500ns") != std::string::npos,
+               "summarize_scope_times.sh preserves nanosecond formatting");
     }
 
     static void test_default_sink_write_short_circuits() {
@@ -436,7 +513,7 @@ private:
         std::string_view svLabel = "tests:label:ctor_sv";
         ::xyzzy::scopetimer::ScopeTimer timer("tests:label:ctor_scope", svLabel);
         expect(timer.label_ == svLabel, "ScopeTimer string_view ctor copies label text");
-        expect(timer.labelStorage_.empty(), "ScopeTimer string_view ctor reuses provided storage");
+        expect(timer.labelHeapStorage_.empty(), "ScopeTimer string_view ctor reuses provided storage");
         timer.disabled_ = true;
     }
 
@@ -454,7 +531,7 @@ private:
 
         std::string_view sv = "tests:label:sv";
         verifyLabelResult("std::string_view copy", "tests:label:sv",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{sv});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{sv});
     }
 
     static void test_labelarg_literal_and_pointer_variants() {
@@ -462,7 +539,7 @@ private:
                           true, ::xyzzy::scopetimer::detail::LabelArg{"tests:label:literal"});
 
         verifyLabelResult("string literal empty", "ScopeTimer",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{""});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{""});
 
         const char* ptr = "tests:label:ptr";
         verifyLabelResult("const char* pointer", "tests:label:ptr",
@@ -470,23 +547,22 @@ private:
 
         const char* emptyPtr = "";
         verifyLabelResult("const char* empty string", "ScopeTimer",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{emptyPtr});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{emptyPtr});
 
         const char* nullPtr = nullptr;
         verifyLabelResult("const char* null pointer", "ScopeTimer",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{nullPtr});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{nullPtr});
 
         verifyLabelResult("default LabelArg", "ScopeTimer",
-                          false, ::xyzzy::scopetimer::detail::LabelArg{});
+                          true, ::xyzzy::scopetimer::detail::LabelArg{});
     }
 
     static void test_labelarg_pointer_copies_input() {
         std::string src = "tests:label:ephemeral";
         const char* ptr = src.c_str();
         ::xyzzy::scopetimer::detail::LabelArg arg{ptr};
-        src.clear(); // the original storage now differs; LabelArg should still produce the text
         auto data = std::move(arg).toLabelData();
-        expect(data.view == std::string_view("tests:label:ephemeral"), "LabelArg keeps const char* text alive via copy");
+        expect(data.view.data() == ptr, "LabelArg keeps pointer view without copying");
         expect(data.storage.empty(), "LabelArg const char* avoids heap storage");
     }
 
@@ -568,6 +644,209 @@ private:
         ::setenv("SCOPE_TIMER_FORMAT", "MICROS", 1);
     }
 
+    static void test_thread_buffered_sink_flushes_on_disable() {
+        sinkCaptureBuffer().clear();
+        SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(64U * 1024U);
+        ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(&testSinkWrite);
+        {
+            SCOPE_TIMER("tests:buffered:disable_flush");
+            busyFor(20us);
+        }
+        expect(sinkCaptureBuffer().empty(), "thread-buffered sink defers writes before disable");
+        SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+        ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(nullptr);
+        expect(sinkCaptureBuffer().find("tests:buffered:disable_flush") != std::string::npos,
+               "thread-buffered sink flushes current-thread data on disable");
+    }
+
+    static void test_thread_buffered_sink_flushes_on_thread_exit() {
+        sinkCaptureBuffer().clear();
+        SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(64U * 1024U);
+        ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(&testSinkWrite);
+        std::thread worker([] {
+            SCOPE_TIMER("tests:buffered:thread_exit");
+            std::this_thread::sleep_for(50us);
+        });
+        worker.join();
+        expect(sinkCaptureBuffer().find("tests:buffered:thread_exit") != std::string::npos,
+               "thread-buffered sink flushes worker-thread data on thread exit");
+        SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+        ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(nullptr);
+    }
+
+    static void test_async_sink_flushes_on_disable() {
+        char templ[] = "/tmp/scopetimer_async_disableXXXXXX";
+        char* tdir = ::mkdtemp(templ);
+        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        const std::string logfile = tmpdir + "/ScopeTimer.log";
+        std::remove(logfile.c_str());
+
+        ::setenv("SCOPE_TIMER_DIR", tmpdir.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(tmpdir);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+
+        SCOPE_TIMER_ENABLE_ASYNC_SINK(4096U);
+        {
+            SCOPE_TIMER("tests:async:disable_flush");
+            busyFor(50us);
+        }
+        SCOPE_TIMER_DISABLE_ASYNC_SINK();
+
+        std::ifstream in(logfile, std::ios::binary);
+        std::string content;
+        if (in) {
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        expect(content.find("tests:async:disable_flush") != std::string::npos,
+               "async sink flushes pending data on disable");
+
+        std::remove(logfile.c_str());
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+        if (tdir) {
+            ::rmdir(tmpdir.c_str());
+        }
+    }
+
+    static void test_hot_path_timer_emits_compact_line() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        {
+            SCOPE_TIMER_HOT_PATH("tests:hot_path");
+            busyFor(50us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+
+        expect(sinkCaptureBuffer().find("tests:hot_path") != std::string::npos,
+               "hot-path timer emits the label");
+        expect(sinkCaptureBuffer().find("elapsed=") != std::string::npos,
+               "hot-path timer emits elapsed data");
+        expect(sinkCaptureBuffer().find("start=") == std::string::npos,
+               "hot-path timer omits wall-clock timestamps");
+        expect(sinkCaptureBuffer().find("end=") == std::string::npos,
+               "hot-path timer omits end timestamps");
+        expect(sinkCaptureBuffer().find("TID=") == std::string::npos,
+               "hot-path timer omits thread ids");
+    }
+
+    static void test_performance_overhead() {
+        struct CountingSink {
+            static std::size_t& counter() noexcept {
+                static std::size_t bytes = 0;
+                return bytes;
+            }
+            static void reset() noexcept { counter() = 0; }
+            static void write(const char*, std::size_t len) noexcept { counter() += len; }
+            static void flush() noexcept {}
+        };
+        struct NoopSink {
+            static void write(const char*, std::size_t) noexcept {}
+            static void flush() noexcept {}
+        };
+
+        CountingSink::reset();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&CountingSink::write, &CountingSink::flush);
+
+        constexpr int iterations = 20000;
+
+        const char* modeEnv = ::getenv("SCOPETIMER_PERF_MODE");
+        const std::string mode = modeEnv ? modeEnv : "";
+        const std::string modeLabel = mode.empty() ? "ALL" : mode;
+        const bool defaultOnly  = mode == "DEFAULT_ONLY";
+        const bool bufferedOnly = mode == "BUFFERED_ONLY";
+        const bool noopOnly     = mode == "NOOP_ONLY";
+        const bool allModes     = mode.empty() || mode == "ALL";
+        if (!defaultOnly && !bufferedOnly && !noopOnly && !allModes) {
+            expect(true, "performance overhead skipped (mode filter)");
+            ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+            return;
+        }
+
+        auto baseline = measureLoopDuration(iterations, []() noexcept {
+            volatile int guard = 0;
+            guard += 1;
+        });
+
+        const bool runDefault = allModes || defaultOnly;
+        const bool runBuffered = allModes || bufferedOnly;
+        const bool runNoop = allModes || noopOnly;
+
+        double perCallUs = 0.0;
+        if (runDefault) {
+            auto timed = measureLoopDuration(iterations, []() noexcept {
+                SCOPE_TIMER("tests:perf:overhead");
+                volatile int guard = 0;
+                guard += 1;
+            });
+
+            long long overheadNs = (timed - baseline).count();
+            if (overheadNs < 0) {
+                overheadNs = 0;
+            }
+            perCallUs = (static_cast<double>(overheadNs) / iterations) / 1000.0;
+
+            expect(CountingSink::counter() > 0, "performance overhead sink observed log writes");
+            std::string msg = "SCOPE_TIMER overhead under 50us per call (actual " + std::to_string(perCallUs) + "us) [PERF_MODE=" + modeLabel + "]";
+            expect(perCallUs < 50.0, msg.c_str());
+        } else {
+            expect(true, "performance overhead default sink skipped by mode");
+        }
+
+        if (runNoop) {
+            ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&NoopSink::write, &NoopSink::flush);
+            auto noopTimed = measureLoopDuration(iterations, []() noexcept {
+                SCOPE_TIMER("tests:perf:noop");
+                volatile int guard = 0;
+                guard += 1;
+            });
+            ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&CountingSink::write, &CountingSink::flush);
+
+            long long noopOverheadNs = (noopTimed - baseline).count();
+            if (noopOverheadNs < 0) {
+                noopOverheadNs = 0;
+            }
+            const double noopPerCallUs = (static_cast<double>(noopOverheadNs) / iterations) / 1000.0;
+            std::string noopMsg = "SCOPE_TIMER noop sink under 50us per call (actual " + std::to_string(noopPerCallUs) + "us) [PERF_MODE=" + modeLabel + "]";
+            expect(noopPerCallUs < 50.0, noopMsg.c_str());
+            if (runDefault) {
+                expect(noopPerCallUs <= perCallUs + 0.5, "noop sink not materially slower than default");
+            }
+        } else {
+            expect(true, "performance overhead noop sink skipped by mode");
+        }
+
+        if (runBuffered) {
+            CountingSink::reset();
+            SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(16 * 1024);
+            ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(&CountingSink::write);
+            auto bufferedTimed = measureLoopDuration(iterations, []() noexcept {
+                SCOPE_TIMER("tests:perf:buffered");
+                volatile int guard = 0;
+                guard += 1;
+            });
+            SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+            ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(nullptr);
+
+            long long bufferedOverheadNs = (bufferedTimed - baseline).count();
+            if (bufferedOverheadNs < 0) {
+                bufferedOverheadNs = 0;
+            }
+            const double bufferedPerCallUs = (static_cast<double>(bufferedOverheadNs) / iterations) / 1000.0;
+
+            expect(CountingSink::counter() > 0, "thread-buffered sink observed log writes");
+            std::string bufferedMsg = "Thread-buffered SCOPE_TIMER under 50us per call (actual " + std::to_string(bufferedPerCallUs) + "us) [PERF_MODE=" + modeLabel + "]";
+            expect(bufferedPerCallUs < 50.0, bufferedMsg.c_str());
+            if (runDefault) {
+                expect(bufferedPerCallUs <= (perCallUs * 1.2) + 0.5, "thread-buffered sink is not materially slower than default");
+            }
+        } else {
+            expect(true, "performance overhead buffered sink skipped by mode");
+        }
+
+        // Restore default sink for subsequent tests.
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+    }
+
     // --- tests that touch internal helpers via namespace ---
     static void test_fmt_auto_seconds_branch() {
         char buf[64];
@@ -631,6 +910,27 @@ private:
             busyFor(20000us);
             return 0;
         }
+        if (mode == "buffered_exit") {
+            SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(64U * 1024U);
+            {
+                SCOPE_TIMER("tests:buffered:process_exit");
+                busyFor(100us);
+            }
+            return 0;
+        }
+        if (mode == "async_exit") {
+            SCOPE_TIMER_ENABLE_ASYNC_SINK(4096U);
+            {
+                SCOPE_TIMER("tests:async:process_exit");
+                busyFor(100us);
+            }
+            return 0;
+        }
+        if (mode == "walltime_off") {
+            SCOPE_TIMER("tests:walltime:off");
+            busyFor(100us);
+            return 0;
+        }
         return -1;
     }
 
@@ -664,6 +964,95 @@ private:
         std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
         int rc = run_child_with_env({{"SCOPE_TIMER","0"},{"SCOPE_TIMER_FORMAT","MICROS"},{"SCOPE_TIMER_DIR",tmpdir}});
         expect(rc == 0, "disabled via env executed in child process");
+    }
+
+    static void test_thread_buffered_sink_flushes_on_process_exit() {
+        char templ[] = "/tmp/scopetimer_bufferedXXXXXX";
+        char* tdir = ::mkdtemp(templ);
+        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        const std::string logfile = tmpdir + "/ScopeTimer.log";
+        std::remove(logfile.c_str());
+
+        int rc = run_child_with_env({
+            {"SCOPETIMER_PROBE", "buffered_exit"},
+            {"SCOPE_TIMER_DIR", tmpdir},
+            {"SCOPE_TIMER_FORMAT", "MICROS"}
+        });
+        expect(rc == 0, "thread-buffered sink child process exited cleanly");
+
+        std::ifstream in(logfile, std::ios::binary);
+        std::string content;
+        if (in) {
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        expect(content.find("tests:buffered:process_exit") != std::string::npos,
+               "thread-buffered sink flushes pending data on process exit");
+
+        std::remove(logfile.c_str());
+        if (tdir) {
+            ::rmdir(tmpdir.c_str());
+        }
+    }
+
+    static void test_async_sink_flushes_on_process_exit() {
+        char templ[] = "/tmp/scopetimer_asyncXXXXXX";
+        char* tdir = ::mkdtemp(templ);
+        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        const std::string logfile = tmpdir + "/ScopeTimer.log";
+        std::remove(logfile.c_str());
+
+        int rc = run_child_with_env({
+            {"SCOPETIMER_PROBE", "async_exit"},
+            {"SCOPE_TIMER_DIR", tmpdir},
+            {"SCOPE_TIMER_FORMAT", "MICROS"}
+        });
+        expect(rc == 0, "async sink child process exited cleanly");
+
+        std::ifstream in(logfile, std::ios::binary);
+        std::string content;
+        if (in) {
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        expect(content.find("tests:async:process_exit") != std::string::npos,
+               "async sink flushes pending data on process exit");
+
+        std::remove(logfile.c_str());
+        if (tdir) {
+            ::rmdir(tmpdir.c_str());
+        }
+    }
+
+    static void test_walltime_disable_omits_timestamps() {
+        char templ[] = "/tmp/scopetimer_walltimeXXXXXX";
+        char* tdir = ::mkdtemp(templ);
+        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        const std::string logfile = tmpdir + "/ScopeTimer.log";
+        std::remove(logfile.c_str());
+
+        int rc = run_child_with_env({
+            {"SCOPETIMER_PROBE", "walltime_off"},
+            {"SCOPE_TIMER_DIR", tmpdir},
+            {"SCOPE_TIMER_WALLTIME", "0"},
+            {"SCOPE_TIMER_FORMAT", "MICROS"}
+        });
+        expect(rc == 0, "walltime-off child process exited cleanly");
+
+        std::ifstream in(logfile, std::ios::binary);
+        std::string content;
+        if (in) {
+            content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        expect(content.find("tests:walltime:off") != std::string::npos,
+               "walltime-off child process emitted a log entry");
+        expect(content.find("start=") == std::string::npos,
+               "walltime-off logging omits start timestamp");
+        expect(content.find("end=") == std::string::npos,
+               "walltime-off logging omits end timestamp");
+
+        std::remove(logfile.c_str());
+        if (tdir) {
+            ::rmdir(tmpdir.c_str());
+        }
     }
 
     static void test_disabled_case_insensitivity_child_process() {
@@ -790,6 +1179,20 @@ private:
 };
 
 }} // namespace xyzzy::scopetimer
+
+namespace {
+[[maybe_unused]] void compile_public_thread_buffered_sink_macros() {
+#ifndef NDEBUG
+    SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(1024U);
+    SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+    SCOPE_TIMER_ENABLE_ASYNC_SINK(1024U);
+    SCOPE_TIMER_DISABLE_ASYNC_SINK();
+    {
+        SCOPE_TIMER_HOT_PATH("tests:compile:hot_path");
+    }
+#endif
+}
+} // namespace
 
 // C-style main that forwards to our friend-test class driver.
 int main(int argc, char** argv) {

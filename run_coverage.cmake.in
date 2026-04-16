@@ -1,0 +1,53 @@
+# LLVM-only coverage generator
+if(NOT LLVM_COV_EXECUTABLE OR NOT LLVM_PROFDATA_EXECUTABLE)
+  message(FATAL_ERROR "llvm-cov/llvm-profdata not available")
+endif()
+
+# Find all raw profiles created by tests (from LLVM_PROFILE_FILE=default.%p.profraw)
+file(GLOB _raws "@CMAKE_BINARY_DIR@/default*.profraw")
+if(NOT _raws)
+  message(FATAL_ERROR "No LLVM raw profiles found in @CMAKE_BINARY_DIR@. Did the tests run?")
+endif()
+
+message(STATUS "Found raw profiles: ${_raws}")
+
+# Merge raw profiles directly (no shell needed)
+execute_process(
+  COMMAND "@LLVM_PROFDATA_EXECUTABLE@" merge -sparse ${_raws} -o "@CMAKE_BINARY_DIR@/coverage/coverage.profdata"
+  RESULT_VARIABLE _prof_res
+)
+if(NOT _prof_res EQUAL 0)
+  message(FATAL_ERROR "llvm-profdata merge failed")
+endif()
+
+# Build list of binaries to analyze
+set(_bins)
+if(EXISTS "@CMAKE_BINARY_DIR@/scopetimer_tests")
+  list(APPEND _bins "@CMAKE_BINARY_DIR@/scopetimer_tests")
+endif()
+if(EXISTS "@CMAKE_BINARY_DIR@/Demo")
+  list(APPEND _bins "@CMAKE_BINARY_DIR@/Demo")
+endif()
+if(NOT _bins)
+  message(FATAL_ERROR "No binaries found to analyze with llvm-cov")
+endif()
+
+message(STATUS "Analyzing binaries: ${_bins}")
+
+# Produce HTML report (index.html in coverage dir)
+execute_process(
+  COMMAND "@LLVM_COV_EXECUTABLE@" show ${_bins}
+          "-instr-profile=@CMAKE_BINARY_DIR@/coverage/coverage.profdata"
+          "-format=html"
+          "-output-dir=@CMAKE_BINARY_DIR@/coverage"
+          "-ignore-filename-regex=(_deps|/tests?/|/example/)"
+          "-show-line-counts-or-regions"
+          "-show-expansions"
+          "-show-instantiations"
+  RESULT_VARIABLE _cov_res
+)
+if(NOT _cov_res EQUAL 0)
+  message(FATAL_ERROR "llvm-cov show failed")
+endif()
+
+message(STATUS "Coverage report generated at @CMAKE_BINARY_DIR@/coverage/index.html")

@@ -39,15 +39,15 @@ input="${1:-/dev/stdin}"
 awk '
 function to_us(val, unit,   x) {
   x = val + 0
-  if (unit == "us")      return x
+  if (unit == "ns")      return x / 1000.0
+  else if (unit == "us") return x
   else if (unit == "ms") return x * 1000
   else if (unit == "s")  return x * 1000000
   else return x
 }
 function fmt_us(us,   x) {
   x = us + 0
-  # Treat inputs < 1us as nanoseconds and convert to ms
-  if (x < 1) return sprintf("%.3fms", x/1000.0)
+  if (x < 1) return sprintf("%.0fns", x * 1000.0)
   if (x >= 1000000) return sprintf("%.3fs", x/1000000.0)
   if (x >= 1000)    return sprintf("%.3fms", x/1000.0)
   return sprintf("%.0fus", x)
@@ -78,13 +78,14 @@ function print_block(k, s, e,   i, col) {
 
     # Determine unit (BSD awk-safe)
     unit = ""
-    if (rest ~ /us$/)      unit = "us"
+    if (rest ~ /ns$/)      unit = "ns"
+    else if (rest ~ /us$/) unit = "us"
     else if (rest ~ /ms$/) unit = "ms"
     else if (rest ~ /s$/)  unit = "s"
 
     if (unit != "") {
       num = rest
-      sub(/(us|ms|s)$/, "", num)   # strip unit
+      sub(/(ns|us|ms|s)$/, "", num)   # strip unit
       if (num ~ /^[0-9]+(\.[0-9]+)?$/) {
         us = to_us(num, unit)
 

@@ -1,4 +1,32 @@
-.scannerwork
-build
-*.in
-ScopeTimer.log
+/.scannerwork/
+
+# Local CMake build trees
+/build/
+/build-*/
+/cmake-build-*/
+
+# Generated logs and coverage artifacts
+/ScopeTimer.log
+*.log
+*.gcda
+*.gcno
+*.gcov
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+
+# IDE/editor files
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store

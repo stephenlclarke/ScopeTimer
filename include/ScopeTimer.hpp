@@ -61,6 +61,10 @@
  *     "SECONDS", "MILLIS", "MICROS", or "NANOS" (case-insensitive). If unset or invalid,
  *     the timer uses an automatic format (seconds with ms decimals, else ms with
  *     us decimals, else microseconds).
+ *
+ * - SCOPE_TIMER_WALLTIME:
+ *     Controls whether start/end wall-clock timestamps are included in each record.
+ *     Set to "OFF", "FALSE", "NO", or "0" (case-insensitive) to log elapsed time only.
  * 
  * Usage Example 1:
  * ---------------
@@ -94,19 +98,25 @@
 #include <cctype>     // for std::toupper
 #include <chrono>
 #include <charconv>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <fcntl.h>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define SCOPE_FUNCTION __PRETTY_FUNCTION__
@@ -121,15 +131,58 @@ namespace xyzzy::scopetimer {
 
 #ifndef NDEBUG // Debug build only
 
-    // avoid a global variable altogether and expose a function‑local static via an inline accessor
+    namespace detail {
+        template <typename T>
+        class NoDestroy {
+        public:
+            NoDestroy() {
+                ::new (static_cast<void*>(storage_.data())) T();
+            }
+
+            template <typename First, typename... Rest,
+                      typename = std::enable_if_t<!std::is_same_v<NoDestroy, std::decay_t<First>>>>
+            explicit NoDestroy(First&& first, Rest&&... rest) {
+                ::new (static_cast<void*>(storage_.data())) T(
+                    std::forward<First>(first),
+                    std::forward<Rest>(rest)...
+                );
+            }
+
+            T& get() noexcept {
+                return *std::launder(static_cast<T*>(static_cast<void*>(storage_.data())));
+            }
+
+        private:
+            alignas(T) std::array<std::byte, sizeof(T)> storage_{};
+        };
+
+        template <typename Tag, typename T, typename... Args>
+        inline T& singletonStorage(Args&&... args) {
+            static NoDestroy<T> value(std::forward<Args>(args)...);
+            return value.get();
+        }
+
+        struct OutMutexTag {};
+        struct LineCounterTag {};
+        struct ThreadBufferFlushBytesTag {};
+        struct ThreadBufferRegistryMutexTag {};
+        struct ThreadBufferRegistryTag {};
+        struct SinkConfigMutexTag {};
+        struct ActiveSinkStorageTag {};
+        struct SinkRequiresLockingStorageTag {};
+        struct BufferedSinkTargetModeStorageTag {};
+        struct TestSinkWriteStorageTag {};
+        struct TestSinkFlushStorageTag {};
+        struct BufferedTestSinkWriteStorageTag {};
+        struct AsyncSinkStateTag {};
+    } // namespace detail
+
     inline std::mutex& outMutex() noexcept {
-        static std::mutex m;
-        return m;
+        return detail::singletonStorage<detail::OutMutexTag, std::mutex>();
     }
 
     inline std::atomic<unsigned>& lineCounter() noexcept {
-        static std::atomic<unsigned> c{0};
-        return c;
+        return detail::singletonStorage<detail::LineCounterTag, std::atomic<unsigned>>(0U);
     }
 
     // Small helper extracted to make branch coverage testable in unit tests
@@ -182,7 +235,7 @@ namespace xyzzy::scopetimer {
 
             explicit LabelArg(const char* s) {
                 if (s && *s) {
-                    view_ = std::string_view{s, std::strlen(s)};
+                    view_ = std::string_view{s};
                 } else {
                     view_ = std::string_view{"ScopeTimer"};
                 }
@@ -219,6 +272,8 @@ namespace xyzzy::scopetimer {
      */
     class ScopeTimer {
     public:
+        struct HotPathTag {};
+
         /**
          * @brief Constructs a ScopeTimer instance and records the start time.
          *
@@ -235,8 +290,10 @@ namespace xyzzy::scopetimer {
             assignLabel(std::move(labelData));
             threadNum_ = getThreadIdNumber();
             startSteady_ = std::chrono::steady_clock::now();
-            startWall_ = std::chrono::system_clock::now();
-            formatTime(startWall_, startWallFormatted_, sizeof(startWallFormatted_));
+            if (includeWallTime()) {
+                startWall_ = std::chrono::system_clock::now();
+                startWallFormattedLen_ = static_cast<std::uint8_t>(formatTime(startWall_, startWallFormatted_, sizeof(startWallFormatted_)));
+            }
         }
 
         /**
@@ -244,6 +301,20 @@ namespace xyzzy::scopetimer {
          */
         inline explicit ScopeTimer(std::string_view where, std::string_view label) noexcept
             : ScopeTimer(where, detail::LabelData{label}) {}
+
+        inline explicit ScopeTimer(HotPathTag, detail::LabelData labelData = detail::LabelData{}) noexcept {
+            if (isDisabled()) {
+                disabled_ = true;
+                return;
+            }
+
+            hotPathMode_ = true;
+            assignLabel(std::move(labelData));
+            startSteady_ = std::chrono::steady_clock::now();
+        }
+
+        inline explicit ScopeTimer(HotPathTag, std::string_view label) noexcept
+            : ScopeTimer(HotPathTag{}, detail::LabelData{label}) {}
 
         ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
         ScopeTimer& operator=(const ScopeTimer&) = delete; ///< Deleted copy assignment operator.
@@ -260,44 +331,106 @@ namespace xyzzy::scopetimer {
             }
 
             const auto endSteady = std::chrono::steady_clock::now();
-            const auto endWall   = std::chrono::system_clock::now();
             const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endSteady - startSteady_).count();
 
             auto& fmtBufs = formatBuffers();
-            formatTime(endWall, fmtBufs.endBuf, sizeof(fmtBufs.endBuf));
-            formatElapsed(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf));
+            std::size_t len = 0;
 
             // Final line buffer reused per thread to avoid repeated stack allocation.
             auto& lineBuf = lineBuffer();
+            if (hotPathMode_) {
+                fmtBufs.elapsedLen = static_cast<std::uint8_t>(formatElapsedNanos(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf)));
+                len = buildHotPathLogLine(
+                    lineBuf.data,
+                    sizeof(lineBuf.data),
+                    label_,
+                    fmtBufs.elapsedBuf,
+                    fmtBufs.elapsedLen
+                );
+            } else {
+                const bool wallTimeEnabled = includeWallTime();
+                if (wallTimeEnabled) {
+                    const auto endWall = std::chrono::system_clock::now();
+                    fmtBufs.endLen = static_cast<std::uint8_t>(formatTime(endWall, fmtBufs.endBuf, sizeof(fmtBufs.endBuf)));
+                } else {
+                    fmtBufs.endLen = 0;
+                }
+                fmtBufs.elapsedLen = static_cast<std::uint8_t>(formatElapsed(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf)));
 
-            // Build the log line
-            int n = std::snprintf(
-                lineBuf.data, sizeof(lineBuf.data),
-                "[%.*s] TID=%03u | %.*s | start=%s | end=%s | elapsed=%s\n",
-                static_cast<int>(label_.size()), label_.data(),
-                threadNum_,
-                static_cast<int>(where_.size()), where_.data(),
-                startWallFormatted_,
-                fmtBufs.endBuf,
-                fmtBufs.elapsedBuf
-            );
+                len = buildLogLine(lineBuf.data, sizeof(lineBuf.data), LogLineFields{
+                    label_,
+                    threadNum_,
+                    where_,
+                    std::string_view{startWallFormatted_, startWallFormattedLen_},
+                    std::string_view{fmtBufs.endBuf, fmtBufs.endLen},
+                    std::string_view{fmtBufs.elapsedBuf, fmtBufs.elapsedLen},
+                    wallTimeEnabled
+                });
+            }
 
-            // Convert snprintf result to a safe byte count
-            const std::size_t len = ScopeTimerDetail::finalize_snprintf_result(n, lineBuf.data, sizeof(lineBuf.data));
-
-            // Keep log lines non-interleaved (mutex only around IO)
-            std::lock_guard lock(outMutex());
-
+            const auto activeSink = activeSinkStorage().load();
+            const bool sinkRequiresLocking = sinkRequiresLockingStorage().load();
             if (len) {
-                sinkWriteFn_(lineBuf.data, len);
+                if (sinkRequiresLocking) {
+                    std::lock_guard lock(outMutex());
+                    writeToActiveSink(activeSink, lineBuf.data, len);
+                } else {
+                    writeToActiveSink(activeSink, lineBuf.data, len);
+                }
             }
 
             // Periodic flush to keep logs visible even with large buffers
-            unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1;
+            unsigned cnt = lineCounter().fetch_add(1) + 1;
 
-            if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
-                sinkFlushFn_();
+            // Thread-buffered sink flushes on size; avoid periodic flush to keep the hot path cheap.
+            const bool flushViaInterval = activeSink != ActiveSink::ThreadBuffered;
+            if (flushViaInterval && (cnt % flushInterval() == 0)) { // configurable via SCOPE_TIMER_FLUSH_N
+                flushActiveSink(activeSink);
             }
+        }
+
+        static inline void enableThreadBufferedSink(std::size_t flushBytes = 16U * 1024U) noexcept {
+            if (flushBytes == 0) {
+                flushBytes = 16U * 1024U;
+            }
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            closeLogFd();
+            threadBufferFlushBytesStorage().store(flushBytes);
+            activeSinkStorage().store(ActiveSink::ThreadBuffered);
+            sinkRequiresLockingStorage().store(false);
+            bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default);
+        }
+
+        static inline void disableThreadBufferedSink() noexcept {
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            closeLogFd();
+            restoreDefaultSinkState();
+        }
+
+        static inline void enableAsyncSink(std::size_t flushBytes = 16U * 1024U) noexcept {
+            if (flushBytes == 0) {
+                flushBytes = 16U * 1024U;
+            }
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            closeLogFd();
+            threadBufferFlushBytesStorage().store(flushBytes);
+            activeSinkStorage().store(ActiveSink::ThreadBuffered);
+            sinkRequiresLockingStorage().store(false);
+            bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Async);
+            ensureAsyncSinkRunning();
+        }
+
+        static inline void disableAsyncSink() noexcept {
+            disableThreadBufferedSink();
         }
 
     private:
@@ -331,6 +464,24 @@ namespace xyzzy::scopetimer {
             return disabled;
         }
 
+        static inline bool isTruthySetting(const char* envName, bool defaultValue) noexcept {
+            if (const char* env = std::getenv(envName); env && *env) {
+                std::string value(env);
+                std::transform(value.begin(), value.end(), value.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                if (value == "OFF" || value == "FALSE" || value == "NO" || value == "0") {
+                    return false;
+                }
+                return true;
+            }
+            return defaultValue;
+        }
+
+        static inline bool includeWallTime() noexcept {
+            static const bool enabled = isTruthySetting("SCOPE_TIMER_WALLTIME", true);
+            return enabled;
+        }
+
         /**
          * @brief Retrieves a unique thread ID number in a lock-free manner.
          *
@@ -344,7 +495,7 @@ namespace xyzzy::scopetimer {
 
             if(tid == 0) {
                 static std::atomic<uint32_t> next{ 1 };
-                tid = next.fetch_add(1, std::memory_order_relaxed);
+                tid = next.fetch_add(1);
             }
 
             return tid;
@@ -359,13 +510,12 @@ namespace xyzzy::scopetimer {
          * @return unsigned The number of lines between flushes.
          */
         static inline unsigned flushInterval() noexcept {
-            static const unsigned interval = []() noexcept {
+            static const auto interval = []() noexcept {
+                if (const auto* p = std::getenv("SCOPE_TIMER_FLUSH_N")) {
+                    auto* end = static_cast<char*>(nullptr);
+                    const auto v = std::strtoul(p, &end, 10);
 
-                if(const char* p = std::getenv("SCOPE_TIMER_FLUSH_N")) {
-                    char* end = nullptr;
-                    unsigned long v = std::strtoul(p, &end, 10);
-
-                    if(end != p && *end == '\0' && v > 0UL && v <= 1000000UL) {
+                    if (end != p && *end == '\0' && v > 0UL && v <= 1000000UL) {
                         return static_cast<unsigned>(v);
                     }
                 }
@@ -409,7 +559,7 @@ namespace xyzzy::scopetimer {
         // One-time-selected elapsed-time formatter infrastructure
         // I call through a cached function pointer to avoid branching in the hot path.
         enum class TimeFormat { Auto, Seconds, Millis, Micros, Nanos };
-        using FormatterFn = void(*)(long long ns, char* out, size_t outSz) noexcept;
+        using FormatterFn = std::size_t(*)(long long ns, char* out, size_t outSz) noexcept;
 
         // Portable localtime shim
 #if defined(_WIN32)
@@ -418,35 +568,22 @@ namespace xyzzy::scopetimer {
 #  define LOCALTIME(tm_ptr, time_ptr) localtime_r((time_ptr), (tm_ptr))
 #endif
 
-        /**
-         * @brief Formats a system_clock time_point into a human-readable timestamp string.
-         *
-         * The format is "YYYY-MM-DD HH:MM:SS.mmm" with millisecond precision.
-         *
-         * @param tp The time_point to format.
-         * @param out Buffer to write the formatted string into.
-         * @param outSz Size of the output buffer.
-         */
-        static inline void formatTime(std::chrono::system_clock::time_point tp, char* out, size_t outSz) noexcept {
-            const std::time_t tt = std::chrono::system_clock::to_time_t(tp);
-            auto tm = std::tm{};
-            LOCALTIME(&tm, &tt); // Use thread-safe localtime_r/localtime_s
-
-            const auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
-            const auto ms3 = static_cast<int>(ms_since_epoch % 1000);  // 0..999 fits in int 
-
-            std::snprintf(
-                out, 
-                outSz, 
-                "%04d-%02d-%02d %02d:%02d:%02d.%03d",
-                1900 + tm.tm_year, 
-                1 + tm.tm_mon, 
-                tm.tm_mday,
-                tm.tm_hour, 
-                tm.tm_min, 
-                tm.tm_sec, 
-                ms3
-            );
+        static inline bool appendFixedDigits(char*& out, const char* end, unsigned value, unsigned width) noexcept {
+            std::array<char, 10> tmp{};
+            if (width > tmp.size() || static_cast<std::size_t>(end - out) < width) {
+                return false;
+            }
+            for (unsigned i = 0; i < width; ++i) {
+                const unsigned place = width - 1U - i;
+                unsigned divisor = 1U;
+                for (unsigned j = 0; j < place; ++j) {
+                    divisor *= 10U;
+                }
+                tmp[i] = static_cast<char>('0' + ((value / divisor) % 10U));
+            }
+            std::memcpy(out, tmp.data(), width);
+            out += width;
+            return true;
         }
 
         /**
@@ -457,26 +594,37 @@ namespace xyzzy::scopetimer {
          * from the SCOPE_TIMER_FORMAT environment variable and cached via a
          * function pointer to avoid branching in the hot path.
          */
-        static inline void fmtSeconds(long long ns, char* out, size_t outSz) noexcept {
+        static inline std::size_t fmtSeconds(long long ns, char* out, size_t outSz) noexcept {
             const long long sec   = ns / 1000000000LL;
-            const long long remMs = (ns / 1000000LL) % 1000LL; // 3 decimals
-            std::snprintf(out, outSz, "%lld.%03llds", sec, remMs);
+            const auto remMs = static_cast<unsigned>((ns / 1000000LL) % 1000LL); // 3 decimals
+            return formatElapsedImpl(static_cast<unsigned long long>(sec), remMs, 's', out, outSz);
         }
 
-        static inline void fmtMillis(long long ns, char* out, size_t outSz) noexcept {
+        static inline std::size_t fmtMillis(long long ns, char* out, size_t outSz) noexcept {
             const long long ms    = ns / 1000000LL;
-            const long long remUs = (ns / 1000LL) % 1000LL;   // 3 decimals for ms
-            std::snprintf(out, outSz, "%lld.%03lldms", ms, remUs);
+            const auto remUs = static_cast<unsigned>((ns / 1000LL) % 1000LL);   // 3 decimals for ms
+            return formatElapsedImpl(static_cast<unsigned long long>(ms), remUs, 'm', out, outSz); // suffix handled inside
         }
 
-        static inline void fmtMicros(long long ns, char* out, size_t outSz) noexcept {
+        static inline std::size_t fmtMicros(long long ns, char* out, size_t outSz) noexcept {
             const long long us    = ns / 1000LL;
-            const long long remNs = ns % 1000LL; // nanoseconds remainder
-            std::snprintf(out, outSz, "%lld.%03lldus", us, remNs);
+            const auto remNs = static_cast<unsigned>(ns % 1000LL); // nanoseconds remainder
+            return formatElapsedImpl(static_cast<unsigned long long>(us), remNs, 'u', out, outSz); // suffix handled inside
         }
 
-        static inline void fmtNanos(long long ns, char* out, size_t outSz) noexcept {
-            std::snprintf(out, outSz, "%lldns", ns);
+        static inline std::size_t fmtNanos(long long ns, char* out, size_t outSz) noexcept {
+            char* cur = out;
+            const char* end = out + outSz;
+            if (auto* next = appendUnsignedToBuffer(cur, end, static_cast<unsigned long long>(ns)); next) {
+                cur = next;
+                (void)appendStrToBuffer(cur, end, "ns", 2);
+            }
+            if (cur < end) {
+                *cur = '\0';
+            } else if (outSz) {
+                out[outSz - 1] = '\0';
+            }
+            return static_cast<std::size_t>(cur - out);
         }
 
         /**
@@ -485,16 +633,17 @@ namespace xyzzy::scopetimer {
          * Selects the most appropriate unit: seconds (>=1s), milliseconds (>=1ms), microseconds (>=1us), or nanoseconds (<1us).
          * For explicit microseconds, use SCOPE_TIMER_FORMAT=MICROS.
          */
-        static inline void fmtAuto(long long ns, char* out, size_t outSz) noexcept {
+        static inline std::size_t fmtAuto(long long ns, char* out, size_t outSz) noexcept {
             if (ns >= 1000000000LL) {
-                fmtSeconds(ns, out, outSz);
-            } else if (ns >= 1000000LL) {
-                fmtMillis(ns, out, outSz);
-            } else if (ns >= 1000LL) {
-                fmtMicros(ns, out, outSz);
-            } else {
-                fmtNanos(ns, out, outSz);
+                return fmtSeconds(ns, out, outSz);
             }
+            if (ns >= 1000000LL) {
+                return fmtMillis(ns, out, outSz);
+            }
+            if (ns >= 1000LL) {
+                return fmtMicros(ns, out, outSz);
+            }
+            return fmtNanos(ns, out, outSz);
         }
 
         /**
@@ -529,6 +678,98 @@ namespace xyzzy::scopetimer {
             return fn;
         }
 
+        // Small helpers for fast formatting (avoid snprintf).
+        static inline char* appendUnsignedToBuffer(char* out, const char* end, unsigned long long v) noexcept {
+            std::array<char, 32> tmp{};
+            int pos = 0;
+            do {
+                tmp[static_cast<std::size_t>(pos)] = static_cast<char>('0' + (v % 10ULL));
+                ++pos;
+                v /= 10ULL;
+            } while (v && pos < static_cast<int>(tmp.size()));
+            if (static_cast<std::size_t>(end - out) < static_cast<std::size_t>(pos)) {
+                return nullptr;
+            }
+            while (pos--) {
+                *out++ = tmp[static_cast<std::size_t>(pos)];
+            }
+            return out;
+        }
+
+        static inline char* appendThreeDigitsToBuffer(char* out, const char* end, unsigned v) noexcept {
+            const std::array<char, 3> digits{
+                static_cast<char>('0' + ((v / 100U) % 10U)),
+                static_cast<char>('0' + ((v / 10U) % 10U)),
+                static_cast<char>('0' + (v % 10U))
+            };
+            if (static_cast<std::size_t>(end - out) < digits.size()) {
+                return nullptr;
+            }
+            std::memcpy(out, digits.data(), digits.size());
+            return out + digits.size();
+        }
+
+        static inline bool appendCharToBuffer(char*& out, const char* end, char c) noexcept {
+            if (out >= end) return false;
+            *out++ = c;
+            return true;
+        }
+
+        static inline bool appendStrToBuffer(char*& out, const char* end, const char* s, std::size_t n) noexcept {
+            if (static_cast<std::size_t>(end - out) < n) return false;
+            std::memcpy(out, s, n);
+            out += n;
+            return true;
+        }
+
+        static inline std::size_t formatElapsedImpl(unsigned long long whole, unsigned frac3, char unit, char* out, size_t outSz) noexcept {
+            char* cur = out;
+            const char* end = out + outSz;
+
+            if (auto* next = appendUnsignedToBuffer(cur, end, whole)) {
+                cur = next;
+            } else {
+                if (outSz) out[0] = '\0';
+                return 0;
+            }
+
+            if (!appendCharToBuffer(cur, end, '.')) {
+                if (outSz) {
+                    out[0] = '\0';
+                }
+                return 0;
+            }
+
+            if (auto* next = appendThreeDigitsToBuffer(cur, end, frac3)) {
+                cur = next;
+            } else {
+                if (outSz) out[0] = '\0';
+                return 0;
+            }
+
+            const char suffix1 = unit;
+            const char suffix2 = (unit == 's') ? '\0' : 's'; // "s" for seconds, "ms"/"us"
+            if (!appendCharToBuffer(cur, end, suffix1)) {
+                if (outSz) {
+                    out[0] = '\0';
+                }
+                return 0;
+            }
+            if (suffix2 && !appendCharToBuffer(cur, end, suffix2)) {
+                if (outSz) {
+                    out[0] = '\0';
+                }
+                return 0;
+            }
+
+            if (cur < end) {
+                *cur = '\0';
+            } else if (outSz) {
+                out[outSz - 1] = '\0';
+            }
+            return static_cast<std::size_t>(cur - out);
+        }
+
         /**
          * @brief Formats elapsed time using a one-time-selected formatter.
          *
@@ -539,8 +780,173 @@ namespace xyzzy::scopetimer {
          * @param out  Output buffer.
          * @param outSz Size of the output buffer.
          */
-        static inline void formatElapsed(long long ns, char* out, size_t outSz) noexcept {
-            getFormatter()(ns, out, outSz);
+        static inline std::size_t formatElapsed(long long ns, char* out, size_t outSz) noexcept {
+            return getFormatter()(ns, out, outSz);
+        }
+
+        static inline std::size_t formatElapsedNanos(long long ns, char* out, size_t outSz) noexcept {
+            return fmtNanos(ns, out, outSz);
+        }
+
+        static inline void appendBytesTruncating(char*& out, const char* end, const char* s, std::size_t n) noexcept {
+            if (n == 0 || out >= end) {
+                return;
+            }
+            const auto available = static_cast<std::size_t>(end - out);
+            const auto toCopy = std::min(available, n);
+            std::memcpy(out, s, toCopy);
+            out += toCopy;
+        }
+
+        static inline void appendCharTruncating(char*& out, const char* end, char c) noexcept {
+            if (out < end) {
+                *out++ = c;
+            }
+        }
+
+        /**
+         * @brief Formats a system_clock time_point into a human-readable timestamp string.
+         *
+         * The format is "YYYY-MM-DD HH:MM:SS.mmm" with millisecond precision.
+         * The calendar portion is cached per-thread for the current second.
+         */
+        static inline std::size_t formatTime(std::chrono::system_clock::time_point tp, char* out, size_t outSz) noexcept {
+            if (outSz == 0) {
+                return 0;
+            }
+
+            const std::time_t tt = std::chrono::system_clock::to_time_t(tp);
+            const auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+            const auto ms3 = static_cast<unsigned>(ms_since_epoch % 1000);
+
+            struct TimestampPrefixCache {
+                std::time_t second{-1};
+                std::array<char, 20> prefix{};
+                std::uint8_t len{0};
+            };
+            thread_local TimestampPrefixCache cache;
+
+            if (cache.second != tt) {
+                auto tm = std::tm{};
+                LOCALTIME(&tm, &tt);
+
+                char* prefixOut = cache.prefix.data();
+                if (const char* prefixEnd = cache.prefix.data() + cache.prefix.size() - 1U;
+                    !appendFixedDigits(prefixOut, prefixEnd, static_cast<unsigned>(1900 + tm.tm_year), 4) ||
+                    !appendCharToBuffer(prefixOut, prefixEnd, '-') ||
+                    !appendFixedDigits(prefixOut, prefixEnd, static_cast<unsigned>(1 + tm.tm_mon), 2) ||
+                    !appendCharToBuffer(prefixOut, prefixEnd, '-') ||
+                    !appendFixedDigits(prefixOut, prefixEnd, static_cast<unsigned>(tm.tm_mday), 2) ||
+                    !appendCharToBuffer(prefixOut, prefixEnd, ' ') ||
+                    !appendFixedDigits(prefixOut, prefixEnd, static_cast<unsigned>(tm.tm_hour), 2) ||
+                    !appendCharToBuffer(prefixOut, prefixEnd, ':') ||
+                    !appendFixedDigits(prefixOut, prefixEnd, static_cast<unsigned>(tm.tm_min), 2) ||
+                    !appendCharToBuffer(prefixOut, prefixEnd, ':') ||
+                    !appendFixedDigits(prefixOut, prefixEnd, static_cast<unsigned>(tm.tm_sec), 2)) {
+                    out[0] = '\0';
+                    return 0;
+                }
+                *prefixOut = '\0';
+                cache.second = tt;
+                cache.len = static_cast<std::uint8_t>(prefixOut - cache.prefix.data());
+            }
+
+            char* cur = out;
+            const char* end = out + outSz - 1U;
+            appendBytesTruncating(cur, end, cache.prefix.data(), cache.len);
+            appendCharTruncating(cur, end, '.');
+            if (auto* next = appendThreeDigitsToBuffer(cur, end, ms3)) {
+                cur = next;
+            }
+            *cur = '\0';
+            return static_cast<std::size_t>(cur - out);
+        }
+
+        static inline void appendUnsignedTruncating(char*& out, const char* end, unsigned long long v) noexcept {
+            std::array<char, 32> tmp{};
+            const auto result = std::to_chars(tmp.data(), tmp.data() + tmp.size(), v);
+            if (result.ec != std::errc{}) {
+                return;
+            }
+            appendBytesTruncating(out, end, tmp.data(), static_cast<std::size_t>(result.ptr - tmp.data()));
+        }
+
+        static inline void appendThreadIdTruncating(char*& out, const char* end, unsigned tid) noexcept {
+            if (tid < 1000U) {
+                const std::array<char, 3> digits{
+                    static_cast<char>('0' + ((tid / 100U) % 10U)),
+                    static_cast<char>('0' + ((tid / 10U) % 10U)),
+                    static_cast<char>('0' + (tid % 10U))
+                };
+                appendBytesTruncating(out, end, digits.data(), digits.size());
+                return;
+            }
+            appendUnsignedTruncating(out, end, tid);
+        }
+
+        struct LogLineFields {
+            std::string_view label;
+            unsigned threadNum{0};
+            std::string_view where;
+            std::string_view startWall;
+            std::string_view endWall;
+            std::string_view elapsed;
+            bool wallTimeEnabled{false};
+        };
+
+        static inline std::size_t buildLogLine(
+            char* out,
+            std::size_t outSz,
+            const LogLineFields& fields
+        ) noexcept {
+            if (outSz == 0) {
+                return 0;
+            }
+
+            char* cur = out;
+            const char* end = out + outSz - 1U; // reserve a byte for a terminator
+
+            appendCharTruncating(cur, end, '[');
+            appendBytesTruncating(cur, end, fields.label.data(), fields.label.size());
+            appendBytesTruncating(cur, end, "] TID=", sizeof("] TID=") - 1U);
+            appendThreadIdTruncating(cur, end, fields.threadNum);
+            appendBytesTruncating(cur, end, " | ", sizeof(" | ") - 1U);
+            appendBytesTruncating(cur, end, fields.where.data(), fields.where.size());
+            if (fields.wallTimeEnabled) {
+                appendBytesTruncating(cur, end, " | start=", sizeof(" | start=") - 1U);
+                appendBytesTruncating(cur, end, fields.startWall.data(), fields.startWall.size());
+                appendBytesTruncating(cur, end, " | end=", sizeof(" | end=") - 1U);
+                appendBytesTruncating(cur, end, fields.endWall.data(), fields.endWall.size());
+            }
+            appendBytesTruncating(cur, end, " | elapsed=", sizeof(" | elapsed=") - 1U);
+            appendBytesTruncating(cur, end, fields.elapsed.data(), fields.elapsed.size());
+            appendCharTruncating(cur, end, '\n');
+
+            *cur = '\0';
+            return static_cast<std::size_t>(cur - out);
+        }
+
+        static inline std::size_t buildHotPathLogLine(
+            char* out,
+            std::size_t outSz,
+            std::string_view label,
+            const char* elapsed,
+            std::size_t elapsedLen
+        ) noexcept {
+            if (outSz == 0) {
+                return 0;
+            }
+
+            char* cur = out;
+            const char* end = out + outSz - 1U;
+            appendCharTruncating(cur, end, '[');
+            appendBytesTruncating(cur, end, label.data(), label.size());
+            appendBytesTruncating(cur, end, "] elapsed=", sizeof("] elapsed=") - 1U);
+            appendBytesTruncating(cur, end, elapsed, elapsedLen);
+            appendCharTruncating(cur, end, '\n');
+
+            *cur = '\0';
+            return static_cast<std::size_t>(cur - out);
         }
 
         /**
@@ -549,6 +955,8 @@ namespace xyzzy::scopetimer {
         struct FormatBuffers {
             char endBuf[32];
             char elapsedBuf[32];
+            std::uint8_t endLen;
+            std::uint8_t elapsedLen;
         };
 
         /**
@@ -585,27 +993,310 @@ namespace xyzzy::scopetimer {
         static void defaultSinkWrite(const char* data, std::size_t len) noexcept;
         static void defaultSinkFlush() noexcept;
         static void noopSinkFlush() noexcept;
+        static void threadBufferedSinkWrite(const char* data, std::size_t len) noexcept;
+        static void threadBufferedSinkFlush() noexcept;
+        static void asyncSinkWrite(const char* data, std::size_t len) noexcept;
+        static void asyncSinkFlush() noexcept;
 
-        using SinkWriteFn = void(*)(const char*, std::size_t) noexcept;
-        using SinkFlushFn = void(*)() noexcept;
+        enum class ActiveSink {
+            Default,
+            ThreadBuffered,
+            TestCustom,
+        };
 
-        static inline SinkWriteFn sinkWriteFn_{&defaultSinkWrite};
-        static inline SinkFlushFn sinkFlushFn_{&defaultSinkFlush};
+        enum class BufferedSinkTargetMode {
+            Default,
+            Async,
+            TestCustom,
+        };
 
-        // Test-only sink swap; safe when called during single-threaded setup/teardown.
-        static inline void setLogSinkForTests(SinkWriteFn writeFn, SinkFlushFn flushFn) noexcept {
-            if (writeFn) {
-                closeLogFd();
-                sinkWriteFn_ = writeFn;
-                sinkFlushFn_ = flushFn ? flushFn : &noopSinkFlush;
-            } else {
-                closeLogFd();
-                sinkWriteFn_ = defaultSinkWrite;
-                sinkFlushFn_ = defaultSinkFlush;
+        struct ThreadBufferState {
+            std::mutex mutex;
+            std::string data;
+        };
+
+        struct ThreadBufferHandle {
+            std::shared_ptr<ThreadBufferState> state{std::make_shared<ThreadBufferState>()};
+
+            ThreadBufferHandle() {
+                registerThreadBuffer(state);
+            }
+
+            ~ThreadBufferHandle() {
+                ScopeTimer::flushThreadBuffer(*state);
+            }
+
+            ThreadBufferHandle(const ThreadBufferHandle&) = delete;
+            ThreadBufferHandle& operator=(const ThreadBufferHandle&) = delete;
+            ThreadBufferHandle(ThreadBufferHandle&&) = delete;
+            ThreadBufferHandle& operator=(ThreadBufferHandle&&) = delete;
+        };
+
+        static inline ThreadBufferState& threadLocalBuffer() noexcept {
+            thread_local ThreadBufferHandle handle;
+            return *handle.state;
+        }
+        static inline std::atomic<std::size_t>& threadBufferFlushBytesStorage() noexcept {
+            return detail::singletonStorage<detail::ThreadBufferFlushBytesTag, std::atomic<std::size_t>>(16U * 1024U);
+        }
+        static inline std::size_t threadBufferFlushBytes() noexcept {
+            return threadBufferFlushBytesStorage().load();
+        }
+        static inline std::mutex& threadBufferRegistryMutex() noexcept {
+            return detail::singletonStorage<detail::ThreadBufferRegistryMutexTag, std::mutex>();
+        }
+        static inline std::vector<std::weak_ptr<ThreadBufferState>>& threadBufferRegistry() noexcept {
+            return detail::singletonStorage<detail::ThreadBufferRegistryTag, std::vector<std::weak_ptr<ThreadBufferState>>>();
+        }
+        static inline void registerThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
+            std::lock_guard lock(threadBufferRegistryMutex());
+            threadBufferRegistry().emplace_back(state);
+        }
+        static inline std::vector<std::shared_ptr<ThreadBufferState>> snapshotThreadBuffers() noexcept {
+            std::vector<std::shared_ptr<ThreadBufferState>> states;
+            std::lock_guard lock(threadBufferRegistryMutex());
+            auto& registry = threadBufferRegistry();
+            registry.erase(
+                std::remove_if(registry.begin(), registry.end(), [&states](const auto& weakState) {
+                    if (auto state = weakState.lock()) {
+                        states.push_back(state);
+                        return false;
+                    }
+                    return true;
+                }),
+                registry.end()
+            );
+            return states;
+        }
+        static inline void flushThreadBuffer(ThreadBufferState& state) noexcept {
+            std::string pending;
+            {
+                std::lock_guard lock(state.mutex);
+                if (state.data.empty()) {
+                    return;
+                }
+                pending.swap(state.data);
+            }
+            std::lock_guard lock(outMutex());
+            const auto bufferedTarget = bufferedSinkTargetModeStorage().load();
+            writeToBufferedSinkTarget(bufferedTarget, pending.data(), pending.size());
+            flushBufferedSinkTarget(bufferedTarget);
+        }
+        static inline void flushAllThreadBuffers() noexcept {
+            for (const auto& state : snapshotThreadBuffers()) {
+                flushThreadBuffer(*state);
+            }
+        }
+        static inline std::mutex& sinkConfigMutex() noexcept {
+            return detail::singletonStorage<detail::SinkConfigMutexTag, std::mutex>();
+        }
+        static inline void restoreDefaultSinkState() noexcept {
+            activeSinkStorage().store(ActiveSink::Default);
+            sinkRequiresLockingStorage().store(true);
+            bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default);
+        }
+
+        static inline std::atomic<ActiveSink>& activeSinkStorage() noexcept {
+            return detail::singletonStorage<detail::ActiveSinkStorageTag, std::atomic<ActiveSink>>(ActiveSink::Default);
+        }
+        static inline std::atomic<bool>& sinkRequiresLockingStorage() noexcept {
+            return detail::singletonStorage<detail::SinkRequiresLockingStorageTag, std::atomic<bool>>(true);
+        }
+        static inline std::atomic<BufferedSinkTargetMode>& bufferedSinkTargetModeStorage() noexcept {
+            return detail::singletonStorage<detail::BufferedSinkTargetModeStorageTag, std::atomic<BufferedSinkTargetMode>>(BufferedSinkTargetMode::Default);
+        }
+        static inline std::function<void(const char*, std::size_t)>& testSinkWriteStorage() {
+            return detail::singletonStorage<detail::TestSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
+        }
+        static inline std::function<void()>& testSinkFlushStorage() {
+            return detail::singletonStorage<detail::TestSinkFlushStorageTag, std::function<void()>>();
+        }
+        static inline std::function<void(const char*, std::size_t)>& bufferedTestSinkWriteStorage() {
+            return detail::singletonStorage<detail::BufferedTestSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
+        }
+        static inline void writeToActiveSink(ActiveSink sink, const char* data, std::size_t len) noexcept {
+            switch (sink) {
+                case ActiveSink::ThreadBuffered:
+                    threadBufferedSinkWrite(data, len);
+                    break;
+                case ActiveSink::TestCustom:
+                    if (const auto& writeFn = testSinkWriteStorage(); writeFn) {
+                        writeFn(data, len);
+                    }
+                    break;
+                case ActiveSink::Default:
+                    defaultSinkWrite(data, len);
+                    break;
+            }
+        }
+        static inline void flushActiveSink(ActiveSink sink) noexcept {
+            switch (sink) {
+                case ActiveSink::ThreadBuffered:
+                    threadBufferedSinkFlush();
+                    break;
+                case ActiveSink::TestCustom:
+                    if (const auto& flushFn = testSinkFlushStorage(); flushFn) {
+                        flushFn();
+                    }
+                    break;
+                case ActiveSink::Default:
+                    defaultSinkFlush();
+                    break;
+            }
+        }
+        static inline void writeToBufferedSinkTarget(
+            BufferedSinkTargetMode mode,
+            const char* data,
+            std::size_t len
+        ) noexcept {
+            switch (mode) {
+                case BufferedSinkTargetMode::Async:
+                    asyncSinkWrite(data, len);
+                    break;
+                case BufferedSinkTargetMode::TestCustom:
+                    if (const auto& writeFn = bufferedTestSinkWriteStorage(); writeFn) {
+                        writeFn(data, len);
+                    }
+                    break;
+                case BufferedSinkTargetMode::Default:
+                    defaultSinkWrite(data, len);
+                    break;
+            }
+        }
+        static inline void flushBufferedSinkTarget(BufferedSinkTargetMode mode) noexcept {
+            switch (mode) {
+                case BufferedSinkTargetMode::Async:
+                case BufferedSinkTargetMode::TestCustom:
+                    noopSinkFlush();
+                    break;
+                case BufferedSinkTargetMode::Default:
+                    defaultSinkFlush();
+                    break;
             }
         }
 
-        inline void assignLabel(detail::LabelData&& data) noexcept {
+        struct AsyncSinkState {
+            std::mutex mutex;
+            std::condition_variable ready;
+            std::condition_variable drained;
+            std::deque<std::string> queue;
+            std::thread worker;
+            bool running{false};
+            bool stop{false};
+            bool writing{false};
+        };
+
+        static inline AsyncSinkState& asyncSinkState() noexcept {
+            return detail::singletonStorage<detail::AsyncSinkStateTag, AsyncSinkState>();
+        }
+        static inline void runAsyncSinkWorker() noexcept {
+            auto& workerState = asyncSinkState();
+            for (;;) {
+                std::string pending;
+                {
+                    std::unique_lock lock(workerState.mutex);
+                    workerState.ready.wait(lock, [&workerState] {
+                        return workerState.stop || !workerState.queue.empty();
+                    });
+                    if (workerState.queue.empty()) {
+                        if (workerState.stop) {
+                            break;
+                        }
+                        continue;
+                    }
+                    pending = std::move(workerState.queue.front());
+                    workerState.queue.pop_front();
+                    while (!workerState.queue.empty()) {
+                        pending += workerState.queue.front();
+                        workerState.queue.pop_front();
+                    }
+                    workerState.writing = true;
+                }
+
+                defaultSinkWrite(pending.data(), pending.size());
+
+                {
+                    std::lock_guard lock(workerState.mutex);
+                    workerState.writing = false;
+                    if (workerState.queue.empty()) {
+                        workerState.drained.notify_all();
+                    }
+                }
+            }
+            defaultSinkFlush();
+        }
+
+        static inline void ensureAsyncSinkRunning() noexcept {
+            auto& state = asyncSinkState();
+            std::lock_guard lock(state.mutex);
+            if (state.running) {
+                return;
+            }
+            state.stop = false;
+            state.writing = false;
+            state.running = true;
+            state.worker = std::thread([] { runAsyncSinkWorker(); });
+        }
+
+        static inline void shutdownAsyncSink() noexcept {
+            auto& state = asyncSinkState();
+            std::unique_lock lock(state.mutex);
+            if (!state.running) {
+                return;
+            }
+            state.stop = true;
+            lock.unlock();
+            state.ready.notify_all();
+            if (state.worker.joinable()) {
+                state.worker.join();
+            }
+            lock.lock();
+            state.stop = false;
+            state.running = false;
+            state.writing = false;
+        }
+
+        // Test-only sink swap; safe when called during single-threaded setup/teardown.
+        static inline void setLogSinkForTests(
+            std::function<void(const char*, std::size_t)> writeFn = {},
+            std::function<void()> flushFn = {}
+        ) {
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            bufferedTestSinkWriteStorage() = {};
+            bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default);
+            if (writeFn) {
+                closeLogFd();
+                testSinkWriteStorage() = std::move(writeFn);
+                testSinkFlushStorage() = flushFn ? std::move(flushFn) : std::function<void()>{};
+                activeSinkStorage().store(ActiveSink::TestCustom);
+                sinkRequiresLockingStorage().store(true); // tests expect serialized writes
+            } else {
+                closeLogFd();
+                testSinkWriteStorage() = {};
+                testSinkFlushStorage() = {};
+                activeSinkStorage().store(ActiveSink::Default);
+                sinkRequiresLockingStorage().store(true);
+            }
+        }
+
+        // Test-only: allow buffered sink to flush to a custom target (e.g., in-memory sink).
+        static inline void setBufferedSinkTargetForTests(
+            std::function<void(const char*, std::size_t)> writeFn = {}
+        ) {
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            bufferedTestSinkWriteStorage() = std::move(writeFn);
+            bufferedSinkTargetModeStorage().store(
+                bufferedTestSinkWriteStorage() ? BufferedSinkTargetMode::TestCustom : BufferedSinkTargetMode::Default
+            );
+        }
+
+        inline void assignLabel(detail::LabelData data) noexcept {
             const std::string_view source = !data.storage.empty() ? std::string_view{data.storage} : data.view;
             if (source.empty()) {
                 label_ = "ScopeTimer";
@@ -617,7 +1308,7 @@ namespace xyzzy::scopetimer {
                 label_ = std::string_view{labelBuffer_.data(), source.size()};
                 labelHeapStorage_.clear();
             } else {
-                labelHeapStorage_.assign(source.begin(), source.end());
+                labelHeapStorage_ = !data.storage.empty() ? std::move(data.storage) : std::string(source);
                 label_ = labelHeapStorage_;
             }
         }
@@ -626,7 +1317,7 @@ namespace xyzzy::scopetimer {
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
         std::array<char, 128> labelBuffer_{};
         std::string labelHeapStorage_;
-        uint32_t threadNum_; ///< Unique thread ID number.
+        uint32_t threadNum_{0}; ///< Unique thread ID number.
 
         static inline thread_local FormatBuffers tlsFormatBuffers_{};
         static inline thread_local LineBuffer tlsLineBuffer_{};
@@ -656,7 +1347,7 @@ namespace xyzzy::scopetimer {
             openFlags |= O_CLOEXEC;
 #endif
 
-            if (int newFd = ::open(path.c_str(), openFlags, 0644); newFd >= 0) {
+            if (int newFd = ::open(path.c_str(), openFlags, 0600); newFd >= 0) {
 #ifndef O_CLOEXEC
                 (void)::fcntl(newFd, F_SETFD, FD_CLOEXEC);
 #endif
@@ -679,6 +1370,10 @@ namespace xyzzy::scopetimer {
             static bool registered = false;
             if (!registered) {
                 std::atexit([]() noexcept {
+                    std::lock_guard sinkStateLock(sinkConfigMutex());
+                    flushAllThreadBuffers();
+                    asyncSinkFlush();
+                    shutdownAsyncSink();
                     closeLogFd();
                 });
                 registered = true;
@@ -748,6 +1443,7 @@ namespace xyzzy::scopetimer {
          */
         std::chrono::system_clock::time_point startWall_;
         char startWallFormatted_[TimestampBufSize]{};
+        std::uint8_t startWallFormattedLen_{0};
 
         /**
          * @brief Indicates if this timer instance is disabled.
@@ -762,6 +1458,7 @@ namespace xyzzy::scopetimer {
          * no performance impact in Release builds.
          */
         bool disabled_{ false };
+        bool hotPathMode_{ false };
     };
 
     namespace detail {
@@ -844,6 +1541,33 @@ namespace xyzzy::scopetimer {
         })
 #endif
 
+#ifndef SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK
+#define SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(...) \
+    do { ::xyzzy::scopetimer::ScopeTimer::enableThreadBufferedSink(__VA_ARGS__); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK
+#define SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK() \
+    do { ::xyzzy::scopetimer::ScopeTimer::disableThreadBufferedSink(); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_ENABLE_ASYNC_SINK
+#define SCOPE_TIMER_ENABLE_ASYNC_SINK(...) \
+    do { ::xyzzy::scopetimer::ScopeTimer::enableAsyncSink(__VA_ARGS__); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_DISABLE_ASYNC_SINK
+#define SCOPE_TIMER_DISABLE_ASYNC_SINK() \
+    do { ::xyzzy::scopetimer::ScopeTimer::disableAsyncSink(); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_HOT_PATH
+#define SCOPE_TIMER_HOT_PATH(...)                                                            \
+    ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerHotPathInstance__, ST_UNIQ)(            \
+        ::xyzzy::scopetimer::ScopeTimer::HotPathTag{},                                       \
+        ::xyzzy::scopetimer::detail::LabelArg{ __VA_ARGS__ }.toLabelData())
+#endif
+
 #else // Release build -> no-op
 
     /**
@@ -874,10 +1598,36 @@ namespace xyzzy::scopetimer {
     do { (void)sizeof(cond); (void)sizeof(#__VA_ARGS__); } while(0)
 #endif
 
+#ifndef SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK
+#define SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(...) \
+    do { (void)sizeof(#__VA_ARGS__); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK
+#define SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK() \
+    do { } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_ENABLE_ASYNC_SINK
+#define SCOPE_TIMER_ENABLE_ASYNC_SINK(...) \
+    do { (void)sizeof(#__VA_ARGS__); } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_DISABLE_ASYNC_SINK
+#define SCOPE_TIMER_DISABLE_ASYNC_SINK() \
+    do { } while(0)
+#endif
+
+#ifndef SCOPE_TIMER_HOT_PATH
+#define SCOPE_TIMER_HOT_PATH(...) \
+    do { (void)sizeof(#__VA_ARGS__); } while(0)
+#endif
+
 #endif // NDEBUG
 
 } // namespace xyzzy::scopetimer
 
+#ifndef NDEBUG
 inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, std::size_t len) noexcept {
     // Fast path: nothing to write.
     if (len == 0) {
@@ -923,3 +1673,56 @@ inline void xyzzy::scopetimer::ScopeTimer::noopSinkFlush() noexcept {
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
+
+inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite(const char* data, std::size_t len) noexcept {
+    if (len == 0) {
+        return;
+    }
+
+    auto& buffer = threadLocalBuffer();
+    const std::size_t flushBytes = threadBufferFlushBytes();
+    bool shouldFlush = false;
+    {
+        std::lock_guard lock(buffer.mutex);
+        if (buffer.data.capacity() < flushBytes) {
+            buffer.data.reserve(flushBytes);
+        }
+        buffer.data.append(data, len);
+        shouldFlush = buffer.data.size() >= flushBytes;
+    }
+    if (shouldFlush) {
+        flushThreadBuffer(buffer);
+    }
+}
+
+inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkFlush() noexcept {
+    flushThreadBuffer(threadLocalBuffer());
+}
+
+inline void xyzzy::scopetimer::ScopeTimer::asyncSinkWrite(const char* data, std::size_t len) noexcept {
+    if (len == 0) {
+        return;
+    }
+
+    ensureAsyncSinkRunning();
+    auto& state = asyncSinkState();
+    {
+        std::lock_guard lock(state.mutex);
+        state.queue.emplace_back(data, len);
+    }
+    state.ready.notify_one();
+}
+
+inline void xyzzy::scopetimer::ScopeTimer::asyncSinkFlush() noexcept {
+    auto& state = asyncSinkState();
+    std::unique_lock lock(state.mutex);
+    if (!state.running) {
+        return;
+    }
+    state.drained.wait(lock, [&state] {
+        return state.queue.empty() && !state.writing;
+    });
+    lock.unlock();
+    defaultSinkFlush();
+}
+#endif // NDEBUG
