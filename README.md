@@ -121,6 +121,75 @@ void foo() {
 }
 ```
 
+## Integrating into a new project ##
+
+You do not need to copy this repo's full `CMakeLists.txt` into your own
+project. The repo CMake drives the demo app, benchmark app, tests, coverage,
+Sonar, and doc generation. For normal use, `ScopeTimer` is just a header-only
+dependency.
+
+### Simplest integration ###
+
+1. Copy `include/ScopeTimer.hpp` into your project, or vendor this repo under
+   something like `third_party/ScopeTimer`.
+2. Add the header directory to your target's include path.
+3. Compile your target as C++17 or newer.
+4. Include `ScopeTimer.hpp` wherever you want to time a scope.
+5. Run your app with `SCOPE_TIMER=1` in debug builds if you want logging
+   explicitly enabled.
+
+There is no library to link and no install step required for basic use.
+
+### Minimal CMake example ###
+
+If you vendor this repo at `third_party/ScopeTimer`, a consuming target can be
+as simple as:
+
+```cmake
+cmake_minimum_required(VERSION 3.16)
+project(MyApp LANGUAGES CXX)
+
+add_executable(my_app
+    src/main.cpp
+)
+
+target_compile_features(my_app PRIVATE cxx_std_17)
+target_include_directories(my_app PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/ScopeTimer/include
+)
+```
+
+Then in your code:
+
+```cpp
+#include "ScopeTimer.hpp"
+
+int main() {
+    SCOPE_TIMER("main");
+    // app code
+}
+```
+
+### Non-CMake example ###
+
+```bash
+g++ -std=c++17 -I./third_party/ScopeTimer/include src/main.cpp -o my_app
+```
+
+### Important build behavior ###
+
+- In builds where `NDEBUG` is defined, `SCOPE_TIMER(...)` expands to a no-op.
+  That means a typical Release build will compile the timers out completely.
+- In builds where `NDEBUG` is not defined, the timers are active and can be
+  controlled with environment variables such as `SCOPE_TIMER`,
+  `SCOPE_TIMER_DIR`, `SCOPE_TIMER_FORMAT`, and `SCOPE_TIMER_WALLTIME`.
+- If you want to try the lower-overhead sink modes in your own app, use the
+  public macros directly:
+  `SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(...)`,
+  `SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK()`,
+  `SCOPE_TIMER_ENABLE_ASYNC_SINK(...)`,
+  `SCOPE_TIMER_DISABLE_ASYNC_SINK()`, and `SCOPE_TIMER_HOT_PATH(...)`.
+
 ### Conditional timing ###
 
 ```cpp
