@@ -222,6 +222,11 @@ Build, coverage, Sonar, and benchmark-target usage now live in
 Elapsed-format examples and the log-summary pipeline now live in
 [TESTS.md](TESTS.md).
 
+## Benchmarks ##
+
+Current benchmark results, profile guidance, and reproducible per-profile
+commands now live in [BENCHMARK.md](BENCHMARK.md).
+
 ---
 
 <!-- markdownlint-disable MD034 -->

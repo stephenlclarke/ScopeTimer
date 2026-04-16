@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,10 +19,19 @@ from typing import Any
 
 import benchmark_demo
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_VERSION = 1
 NOISE_TOLERANCE_PCT = 2.0
 SINK_BYTES_PLACEHOLDER = "{sink_bytes}"
 THREADS_PLACEHOLDER = "{threads}"
+DEFAULT_REPORT_CONFIG: dict[str, Any] = {
+    "binary": "./build-bench/Benchmark",
+    "scenario": "hotpath-bench",
+    "iterations": 5,
+    "runs": 8,
+    "threads": 4,
+    "sink_bytes": 4096,
+}
 
 PROFILE_DEFS: list[dict[str, Any]] = [
     {
@@ -171,6 +181,88 @@ def format_profile_env(template_env: dict[str, str], threads: int, sink_bytes: i
     }
 
 
+def display_path(path_value: str) -> str:
+    if not path_value:
+        return path_value
+
+    path = Path(path_value).expanduser()
+    try:
+        return f"./{path.resolve().relative_to(REPO_ROOT)}"
+    except (OSError, ValueError):
+        return path_value
+
+
+def profile_doc_config(entry: dict[str, Any] | None) -> dict[str, Any]:
+    config = dict(DEFAULT_REPORT_CONFIG)
+    if entry is None:
+        return config
+
+    config.update(entry.get("benchmark_config", {}))
+    config["binary"] = display_path(str(config.get("binary", DEFAULT_REPORT_CONFIG["binary"])))
+    return config
+
+
+def profile_benchmark_command(profile_def: dict[str, Any], config: dict[str, Any]) -> str:
+    env = format_profile_env(
+        profile_def["env"],
+        int(config.get("threads", DEFAULT_REPORT_CONFIG["threads"])),
+        int(config.get("sink_bytes", DEFAULT_REPORT_CONFIG["sink_bytes"])),
+    )
+    command = [
+        "python3",
+        "scripts/benchmark_demo.py",
+        "--binary",
+        str(config.get("binary", DEFAULT_REPORT_CONFIG["binary"])),
+        "--scenario",
+        str(config.get("scenario", DEFAULT_REPORT_CONFIG["scenario"])),
+        "--iterations",
+        str(config.get("iterations", DEFAULT_REPORT_CONFIG["iterations"])),
+        "--runs",
+        str(config.get("runs", DEFAULT_REPORT_CONFIG["runs"])),
+    ]
+    for key, value in env.items():
+        command.extend(["--env", f"{key}={value}"])
+    return shlex.join(command)
+
+
+def profile_reference_lines(config: dict[str, Any]) -> list[str]:
+    lines = [
+        "## Profile reference",
+        "",
+        "The commands below rerun one profile at a time through",
+        "`scripts/benchmark_demo.py`. The harness handles the alternating",
+        "`SCOPE_TIMER=0` and `SCOPE_TIMER=1` passes for you; the `--env` flags",
+        "shown here are only the profile-specific knobs.",
+        "",
+        (
+            "These examples use "
+            f"`binary={config.get('binary', DEFAULT_REPORT_CONFIG['binary'])}`, "
+            f"`scenario={config.get('scenario', DEFAULT_REPORT_CONFIG['scenario'])}`, "
+            f"`iterations={config.get('iterations', DEFAULT_REPORT_CONFIG['iterations'])}`, "
+            f"`runs={config.get('runs', DEFAULT_REPORT_CONFIG['runs'])}`, "
+            f"`threads={config.get('threads', DEFAULT_REPORT_CONFIG['threads'])}`, "
+            f"and `sink_bytes={config.get('sink_bytes', DEFAULT_REPORT_CONFIG['sink_bytes'])}`."
+        ),
+        "",
+    ]
+
+    for profile_def in PROFILE_DEFS:
+        lines.extend(
+            [
+                f"### {profile_def['label']}",
+                "",
+                profile_def["description"],
+                "",
+                "```bash",
+                profile_benchmark_command(profile_def, config),
+                "```",
+                "",
+            ]
+        )
+
+    return lines
+
+
 def load_history(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"schema_version": SCHEMA_VERSION, "history": []}
@@ -247,6 +339,8 @@ def comparison_delta_text(comparison: dict[str, Any]) -> str:
 
 def render_report(history: dict[str, Any]) -> str:
     entries = history.get("history", [])
+    latest = entries[-1] if entries else None
+    doc_config = profile_doc_config(latest)
     lines = [
         "<!-- markdownlint-disable MD013 -->",
         "",
@@ -267,25 +361,12 @@ def render_report(history: dict[str, Any]) -> str:
         "`example/Benchmark.cpp`. `demo_benchmark_matrix` runs the full profile",
         "matrix, appends `benchmarks/demo_benchmark_history.json`, and refreshes",
         "this file with the latest snapshot.",
-        "",
-        "## Profile meanings",
-        "",
-        "| Profile | Meaning |",
-        "| --- | --- |",
     ]
-
-    for profile_def in PROFILE_DEFS:
-        lines.append(
-            "| "
-            f"{profile_def['label']} | "
-            f"{profile_def['description']} |"
-        )
-
-    lines.append("")
 
     if not entries:
         lines.extend(
             [
+                "",
                 "## Current benchmark snapshot",
                 "",
                 "No benchmark history has been recorded yet.",
@@ -299,15 +380,16 @@ def render_report(history: dict[str, Any]) -> str:
                 "`demo_benchmark_matrix` run.",
             ]
         )
+        lines.extend(["", *profile_reference_lines(doc_config)])
         return "\n".join(lines)
 
-    latest = entries[-1]
     previous = entries[-2] if len(entries) > 1 else None
     git = latest.get("git", {})
     config = latest.get("benchmark_config", {})
 
     lines.extend(
         [
+            "",
             "## Current benchmark snapshot",
             "",
             f"- Recorded at: `{latest.get('recorded_at_utc', 'unknown')}`",
@@ -373,6 +455,7 @@ def render_report(history: dict[str, Any]) -> str:
             "`benchmarks/demo_benchmark_history.json`.",
         ]
     )
+    lines.extend(["", *profile_reference_lines(doc_config)])
 
     return "\n".join(lines)
 
