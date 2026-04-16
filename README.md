@@ -177,6 +177,99 @@ void ingestRecord() {
 It skips function signatures, thread ids, and wall-clock timestamps, and logs a
 compact `elapsed=<n>ns` line for the supplied label.
 
+### Using benchmark profiles in your app ###
+
+The benchmark profiles in [`BENCHMARK.md`](BENCHMARK.md) are not separate
+library modes that you enable by profile name. They are just shorthand for
+combinations of the public macros and runtime settings shown below.
+
+Do not use `SCOPE_TIMER_BENCH_*` environment variables in your own app. Those
+exist only so `example/Benchmark.cpp` can switch benchmark profiles without
+editing code.
+
+1. `Standard timer, default sink`
+
+   Use plain `SCOPE_TIMER(...)`.
+
+   ```cpp
+   void handleRequest() {
+       SCOPE_TIMER("handleRequest");
+       // work
+   }
+   ```
+
+2. `Standard timer, wall time disabled`
+
+   Keep `SCOPE_TIMER(...)` in code, but start the process with wall time
+   formatting disabled.
+
+   ```bash
+   SCOPE_TIMER_WALLTIME=0 ./my_app
+   ```
+
+   ```cpp
+   void handleRequest() {
+       SCOPE_TIMER("handleRequest");
+       // work
+   }
+   ```
+
+3. `Standard timer, buffered sink`
+
+   Enable the thread-buffered sink around the profiled phase, then keep using
+   `SCOPE_TIMER(...)`.
+
+   ```cpp
+   int main() {
+       SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(64 * 1024);
+       runServer();
+       SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+   }
+   ```
+
+4. `Standard timer, buffered sink (threaded stress)`
+
+   This is the same public API as buffered sink. The benchmark name just means
+   the workload is multi-threaded while buffered sink is enabled.
+
+   ```cpp
+   void workerLoop() {
+       SCOPE_TIMER("workerLoop");
+       // threaded work
+   }
+   ```
+
+5. `Standard timer, async sink`
+
+   Enable async sink around the profiled phase, then keep using
+   `SCOPE_TIMER(...)`.
+
+   ```cpp
+   int main() {
+       SCOPE_TIMER_ENABLE_ASYNC_SINK(4 * 1024);
+       runServer();
+       SCOPE_TIMER_DISABLE_ASYNC_SINK();
+   }
+   ```
+
+6. `Hot-path timer, async sink`
+
+   Enable async sink, but switch the hottest code to `SCOPE_TIMER_HOT_PATH(...)`
+   instead of `SCOPE_TIMER(...)`.
+
+   ```cpp
+   int main() {
+       SCOPE_TIMER_ENABLE_ASYNC_SINK(4 * 1024);
+       runIngestion();
+       SCOPE_TIMER_DISABLE_ASYNC_SINK();
+   }
+
+   void ingestRecord() {
+       SCOPE_TIMER_HOT_PATH("ingestRecord");
+       // very busy code
+   }
+   ```
+
 ### Multiple timers in one scope (safe) ###
 
 ```cpp
