@@ -32,11 +32,11 @@ jobs:
       CTEST_OUTPUT_ON_FAILURE: "1"
 
     steps:
-      - name: Install prerequisites (cmake, ninja, coverage tools, git, ca-certs, unzip, python3)
+      - name: Install prerequisites (cmake, ninja, coverage tools, valgrind, git, ca-certs, unzip, python3)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake ninja-build gcovr lcov git ca-certificates unzip jq python3
+            cmake ninja-build gcovr lcov valgrind git ca-certificates unzip jq python3
           update-ca-certificates
 
       - name: Checkout
@@ -85,6 +85,10 @@ jobs:
       - name: Test
         run: |
           ctest --test-dir build --output-on-failure
+
+      - name: Leak Check
+        run: |
+          cmake --build build --target leak_check
 
       # Equivalent to: cmake --build build --target coverage
       - name: Coverage

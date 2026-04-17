@@ -18,6 +18,10 @@ paths. Drop a single macro into a scope and get a structured log line on exit
 with start, end, and elapsed time. In release builds it compiles to a no-op; in
 debug builds it's lock-light and allocation-free on the hot path.
 
+Development note: this codebase has been developed primarily on macOS, with
+support for Linux and Windows in the implementation. Linux is exercised in
+GitHub Actions. Windows support has not been fully tested under Windows.
+
 The concept for this class & macro originated from a software project I worked
 on in the early 1990's while at Merril Lynch. It owed a lot to James O.
 Coplien's Advanced C++: Programming Styles and Idioms (Addison-Wesley, first
@@ -50,19 +54,21 @@ Rewritten from scratch for C++17/20.
 - **Fast, frictionless profiling** of functions, blocks, and object lifetimes.
 - **Production-safe toggling**: enabled in Debug, compiled out in Release (via
   `NDEBUG`).
-- **Consistent, parseable output** to a rolling log file for ad-hoc analysis.
+- **Consistent, parseable output** to an append-only log file or custom sink
+  for ad-hoc analysis.
 
 ### Design rationale ###
 
 - **Zero friction**: a macro expands to a short-lived RAII object; no manual
   start/stop.
 - **Hot-path friendly**: elapsed-unit selection is a **function pointer chosen
-  once** from `SCOPE_TIMER_FORMAT`; per-use cost is a single indirect call +
-  `snprintf`.
+  once** from `SCOPE_TIMER_FORMAT`; per-use formatting uses fixed buffers and
+  manual assembly rather than repeated environment parsing or `snprintf`.
 - **Predictable output**: timestamped start/end + elapsed, suitable for
   grepping or ingestion.
-- **Safe by default**: thread-safe, buffered file I/O with periodic flush to
-  limit syscalls.
+- **Safe by default**: thread-safe direct file appends with periodic flush, plus
+  optional buffered and async sink modes when you need lower caller-thread
+  overhead.
 - **Portable**: uses `localtime_s` (Windows) or `localtime_r` (POSIX).
 - **Release-friendly**: expands to no-ops under `NDEBUG` so you can leave calls
   in code.
@@ -71,10 +77,29 @@ Rewritten from scratch for C++17/20.
 
 - **RAII timing**: starts on construction, logs on destruction.
 - **Unique per-use macro**: safe to place multiple timers in the same scope.
-- **Thread-safe logging** with buffered I/O and periodic flush.
+- **Thread-safe logging** with periodic flush plus optional thread-buffered and
+  async sink modes.
 - **One-time-selected formatter** (functor) for elapsed units via
   `SCOPE_TIMER_FORMAT`. No per-call branching.
+- **Pluggable log sink** via a small public `ScopeTimer::LogSink` interface.
 - **Portable time formatting** (uses `localtime_s`/`localtime_r`).
+
+### How it compares ###
+
+Minimal `ScopedTimer` examples from books such as *C++ High Performance*
+usually show the core RAII idiom only: capture a start time in the
+constructor and print elapsed milliseconds in the destructor. Boost's
+`auto_cpu_timer` is a more polished library utility that automatically
+reports wall, user, and system CPU time when a scope ends.
+
+`ScopeTimer` is aimed at a broader use case. It keeps the same RAII model,
+but adds macro-based insertion, Release-build no-ops, unique macro
+expansion, optional labels, conditional and hot-path timers, cached
+environment-driven configuration, thread IDs, formatted start/end
+timestamps, multiple sink backends, and test hooks.
+
+In short, this project is less a single timer helper and more a lightweight
+instrumentation and logging subsystem built around the scope-timer idiom.
 
 ### Macro uniqueness: `__COUNTER__` and `__LINE__` ###
 
@@ -104,7 +129,7 @@ the macro arguments are expanded **before** token pasting.
   (`NDEBUG` defined) this variable has no effect because `SCOPE_TIMER` calls
   compile to no-ops.
 - `SCOPE_TIMER_DIR` - Directory for `ScopeTimer.log` (default `/tmp`).
-- `SCOPE_TIMER_FLUSH_N` - Flush every N lines (default 256, max 1,000,000).
+- `SCOPE_TIMER_FLUSH_N` - Flush every N lines (default 4096, max 1,000,000).
 - `SCOPE_TIMER_FORMAT` - Elapsed units: `SECONDS`, `MILLIS`, `MICROS`, or
   `NANOS` (case-insensitive). If unset/invalid, auto-selects a readable unit.
 - `SCOPE_TIMER_WALLTIME` - Set to `"OFF"`, `"FALSE"`, `"NO"`, or `"0"` to omit
@@ -188,7 +213,8 @@ g++ -std=c++17 -I./third_party/ScopeTimer/include src/main.cpp -o my_app
   `SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(...)`,
   `SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK()`,
   `SCOPE_TIMER_ENABLE_ASYNC_SINK(...)`,
-  `SCOPE_TIMER_DISABLE_ASYNC_SINK()`, and `SCOPE_TIMER_HOT_PATH(...)`.
+  `SCOPE_TIMER_DISABLE_ASYNC_SINK()`, `SCOPE_TIMER_HOT_PATH(...)`, and
+  `ScopeTimer::setLogSink(...)` / `ScopeTimer::resetLogSink()`.
 
 ### Conditional timing ###
 
@@ -214,15 +240,18 @@ Use the thread-buffered sink when mutex contention on the default logger shows u
 in profiling. Buffered entries flush when the per-thread buffer reaches the
 configured threshold, when you disable the buffered sink, when a worker thread
 exits, and during process shutdown.
+Threshold handoffs publish the completed batch immediately, but defer the
+expensive final sink flush until an explicit flush or teardown point.
 Enable or disable it around the setup or teardown of the code path you are
-profiling. Switching sink mode is now synchronized, but it is still a
-configuration step rather than something to toggle for every individual timer.
+profiling, after any worker threads using it have quiesced. Switching sink mode
+is synchronized, but it is still a configuration step rather than something to
+toggle for every individual timer.
 
 ### Async logging ###
 
 ```cpp
 void fanOut() {
-    SCOPE_TIMER_ENABLE_ASYNC_SINK(4 * 1024);
+    SCOPE_TIMER_ENABLE_ASYNC_SINK(64 * 1024);
     SCOPE_TIMER("fanOut");
     // ... work ...
     SCOPE_TIMER_DISABLE_ASYNC_SINK();
@@ -231,7 +260,42 @@ void fanOut() {
 
 Use the async sink when the buffered sink still spends too much time flushing on
 the caller thread. Async mode keeps the cheap thread-local buffering path, then
-hands full buffers to a background writer thread.
+hands full buffers to a background writer thread. Larger handoff sizes such as
+`64 * 1024` reduce queue churn when you care more about throughput than
+tail-latency of the final write.
+
+### Plug-in logger sink ###
+
+```cpp
+#include <iostream>
+#include "ScopeTimer.hpp"
+
+class CoutLogSink final : public ::xyzzy::scopetimer::ScopeTimer::LogSink {
+public:
+    void write(const char* data, std::size_t len) noexcept override {
+        std::cout.write(data, static_cast<std::streamsize>(len));
+    }
+
+    void flush() noexcept override {
+        std::cout.flush();
+    }
+};
+
+void emitToStdout() {
+    CoutLogSink sink;
+    ::xyzzy::scopetimer::ScopeTimer::setLogSink(sink);
+    SCOPE_TIMER("emitToStdout");
+    // ... work ...
+    ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
+}
+```
+
+Use a custom sink when you want ScopeTimer to write to an existing logging path
+instead of the default logfile. The sink object must outlive the registration.
+With a custom sink registered, direct timers write to it immediately, and the
+built-in buffered and async modes use it as their final output target too.
+A no-op implementation is also useful when you want to benchmark ScopeTimer's
+own overhead without measuring output I/O.
 
 ### Hot-path timing ###
 
@@ -315,22 +379,62 @@ editing code.
 
    ```cpp
    int main() {
-       SCOPE_TIMER_ENABLE_ASYNC_SINK(4 * 1024);
+       SCOPE_TIMER_ENABLE_ASYNC_SINK(64 * 1024);
        runServer();
        SCOPE_TIMER_DISABLE_ASYNC_SINK();
    }
    ```
 
-6. `Hot-path timer, async sink`
+6. `Standard timer, null sink`
+
+   Register a no-op custom sink, then keep using `SCOPE_TIMER(...)`.
+
+   ```cpp
+   struct NullSink final : ::xyzzy::scopetimer::ScopeTimer::LogSink {
+       void write(const char*, std::size_t) noexcept override {}
+   };
+
+   int main() {
+       NullSink sink;
+       ::xyzzy::scopetimer::ScopeTimer::setLogSink(sink);
+       runServer();
+       ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
+   }
+   ```
+
+7. `Hot-path timer, async sink`
 
    Enable async sink, but switch the hottest code to `SCOPE_TIMER_HOT_PATH(...)`
    instead of `SCOPE_TIMER(...)`.
 
    ```cpp
    int main() {
-       SCOPE_TIMER_ENABLE_ASYNC_SINK(4 * 1024);
+       SCOPE_TIMER_ENABLE_ASYNC_SINK(64 * 1024);
        runIngestion();
        SCOPE_TIMER_DISABLE_ASYNC_SINK();
+   }
+
+   void ingestRecord() {
+       SCOPE_TIMER_HOT_PATH("ingestRecord");
+       // very busy code
+   }
+   ```
+
+8. `Hot-path timer, null sink`
+
+   Combine the no-op sink with `SCOPE_TIMER_HOT_PATH(...)` to measure the
+   framework floor without output I/O.
+
+   ```cpp
+   struct NullSink final : ::xyzzy::scopetimer::ScopeTimer::LogSink {
+       void write(const char*, std::size_t) noexcept override {}
+   };
+
+   int main() {
+       NullSink sink;
+       ::xyzzy::scopetimer::ScopeTimer::setLogSink(sink);
+       runIngestion();
+       ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
    }
 
    void ingestRecord() {

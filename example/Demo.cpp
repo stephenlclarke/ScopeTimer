@@ -45,6 +45,17 @@ struct DemoOptions {
     int iterations{1};
 };
 
+class DemoStdoutLogSink final : public ::xyzzy::scopetimer::ScopeTimer::LogSink {
+public:
+    void write(const char* data, std::size_t len) noexcept override {
+        std::cout.write(data, static_cast<std::streamsize>(len));
+    }
+
+    void flush() noexcept override {
+        std::cout.flush();
+    }
+};
+
 static std::atomic<std::uint64_t>& hotPathSink() {
     static std::atomic<std::uint64_t> sink{0};
     return sink;
@@ -167,7 +178,18 @@ static void asyncSinkExample() {
     SCOPE_TIMER_DISABLE_ASYNC_SINK();
 }
 
-// Example 9: Hot-path timer for a compact elapsed-only record.
+// Example 9: Public plug-in sink API using a user-supplied logger class.
+static void pluginSinkExample() {
+    DemoStdoutLogSink sink;
+    ::xyzzy::scopetimer::ScopeTimer::setLogSink(sink);
+    {
+        SCOPE_TIMER("pluginSinkExample");
+        busyFor(900us);
+    }
+    ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
+}
+
+// Example 10: Hot-path timer for a compact elapsed-only record.
 static void hotPathMacroExample() {
     const auto batch = workload::makeTelemetryBatch(24U);
     TelemetryTotals totals{};
@@ -181,7 +203,7 @@ static void hotPathMacroExample() {
     hotPathSink().fetch_xor(totals.checksum + totals.retries + totals.routeBytes[0]);
 }
 
-// Example 10: Using SCOPE_TIMER in a class.
+// Example 11: Using SCOPE_TIMER in a class.
 class Worker {
 public:
     Worker() {
@@ -208,7 +230,7 @@ public:
     }
 };
 
-// Example 11: Track an object's lifetime with a member timer.
+// Example 12: Track an object's lifetime with a member timer.
 class LifetimeTracked {
 public:
     LifetimeTracked() {
@@ -240,6 +262,7 @@ static void runDemoSuite(int intensity) {
     threadedWork(std::clamp(intensity, 1, 8));
     bufferedSinkExample();
     asyncSinkExample();
+    pluginSinkExample();
     hotPathMacroExample();
     hotPathIngestion(intensity);
     Worker w;
@@ -264,8 +287,8 @@ static DemoOptions parseOptions(int argc, char** argv) {
             std::cout << "Usage: Demo [--iterations=N]\n"
                          "The demo executable showcases ScopeTimer usage in educational\n"
                          "scenarios, including nested scopes, conditional timing,\n"
-                         "threaded work, buffered logging, async logging, and the\n"
-                         "compact hot-path timer.\n";
+                         "threaded work, buffered logging, async logging, a plug-in\n"
+                         "logger sink, and the compact hot-path timer.\n";
             std::exit(0);
         } else if (arg.rfind("--iterations=", 0) == 0) {
             options.iterations = std::max(1, std::stoi(arg.substr(13)));

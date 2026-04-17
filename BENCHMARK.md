@@ -20,23 +20,25 @@ this file with the latest snapshot.
 
 ## Current benchmark snapshot
 
-- Recorded at: `2026-04-16T10:45:23+00:00`
-- Commit: `6944489`
-- Subject: perf: avoid label allocs in hot path and simplify buffer use
+- Recorded at: `2026-04-17T19:12:13+00:00`
+- Commit: `01f5457`
+- Subject: test(coverage): exclude test sources from reports
 - Branch: `develop`
 - Dirty worktree: yes
-- Config: `binary=/Users/sclarke/github/ScopeTimer/build-bench/Benchmark`, `build_dir=/Users/sclarke/github/ScopeTimer/build-bench`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, `sink_bytes=4096`, `cxx_flags=-O2`
-- Previous benchmark: `2026-04-16T10:39:49+00:00` on `6944489`
+- Config: `binary=/Users/sclarke/github/ScopeTimer/build-bench/Benchmark`, `build_dir=/Users/sclarke/github/ScopeTimer/build-bench`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, `sink_bytes=4096`, `cxx_flags=-O3`
+- Comparison baseline: last benchmark checked in to `main`: `2026-04-16T10:45:23+00:00` on `6944489`
 - Delta source: per-record overhead when available, otherwise mean overhead.
 
-| Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs previous | Status |
+| Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| Standard timer, default sink | `1.467us` | `0.112667s` (626.768%) | `0.130653s` | `76807` | -0.089us (-5.7%) | faster |
-| Standard timer, wall time disabled | `1.536us` | `0.117945s` (686.597%) | `0.135142s` | `76807` | +0.052us (+3.5%) | slower |
-| Standard timer, buffered sink | `0.073us` | `0.005589s` (33.574%) | `0.022281s` | `76807` | -0.006us (-7.8%) | faster |
-| Standard timer, buffered sink (threaded stress) | `1.903us` | `0.584532s` (3251.913%) | `0.602755s` | `307207` | -0.067us (-3.4%) | faster |
-| Standard timer, async sink | `0.184us` | `0.056567s` (323.844%) | `0.074166s` | `307207` | +0.098us (+114.5%) | slower |
-| Hot-path timer, async sink | `0.029us` | `0.008896s` (51.431%) | `0.026236s` | `307207` | +0.001us (+3.9%) | slower |
+| Standard timer, default sink | `1.247us` | `0.095745s` (585.768%) | `0.112102s` | `76807` | -0.220us (-15.0%) | faster |
+| Standard timer, wall time disabled | `1.144us` | `0.087872s` (554.556%) | `0.103728s` | `76807` | -0.392us (-25.5%) | faster |
+| Standard timer, null sink | `n/a` | `0.002236s` (14.182%) | `0.018035s` | `0` | baseline | baseline |
+| Standard timer, buffered sink | `0.043us` | `0.003281s` (21.426%) | `0.018645s` | `76807` | -0.030us (-41.3%) | faster |
+| Standard timer, buffered sink (threaded stress) | `0.267us` | `0.082110s` (520.680%) | `0.097879s` | `307207` | -1.635us (-86.0%) | faster |
+| Standard timer, async sink | `0.019us` | `0.005729s` (36.557%) | `0.021430s` | `307207` | -0.165us (-89.9%) | faster |
+| Hot-path timer, async sink | `0.016us` | `0.005035s` (32.280%) | `0.020652s` | `307207` | -0.013us (-43.4%) | faster |
+| Hot-path timer, null sink | `n/a` | `0.001208s` (8.334%) | `0.015760s` | `0` | baseline | baseline |
 
 Full historical results remain in
 `benchmarks/demo_benchmark_history.json`.
@@ -48,7 +50,7 @@ The commands below rerun one profile at a time through
 `SCOPE_TIMER=0` and `SCOPE_TIMER=1` passes for you; the `--env` flags
 shown here are only the profile-specific knobs.
 
-These examples use `binary=./build-bench/Benchmark`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, and `sink_bytes=4096`.
+These examples use `binary=./build-bench/Benchmark`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, and a default `sink_bytes=4096` for profiles that do not override it below.
 
 ### Standard timer, default sink
 
@@ -64,6 +66,14 @@ Standard timer with `SCOPE_TIMER_WALLTIME=0` so the report shows the cost of dro
 
 ```bash
 python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_WALLTIME=0
+```
+
+### Standard timer, null sink
+
+Standard timer routed to a no-op sink so the benchmark measures ScopeTimer framework overhead without output I/O.
+
+```bash
+python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_BENCH_SINK=NULL --env SCOPE_TIMER_WALLTIME=0
 ```
 
 ### Standard timer, buffered sink
@@ -84,16 +94,24 @@ python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario ho
 
 ### Standard timer, async sink
 
-Multi-threaded run with the async sink so flush work moves to the background writer instead of the calling thread.
+Multi-threaded run with the async sink so flush work moves to the background writer instead of the calling thread, using a 64 KiB handoff size to reduce enqueue frequency.
 
 ```bash
-python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_BENCH_SINK=ASYNC --env SCOPE_TIMER_BENCH_SINK_BYTES=4096 --env SCOPE_TIMER_BENCH_THREADS=4 --env SCOPE_TIMER_WALLTIME=0
+python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_BENCH_SINK=ASYNC --env SCOPE_TIMER_BENCH_SINK_BYTES=65536 --env SCOPE_TIMER_BENCH_THREADS=4 --env SCOPE_TIMER_WALLTIME=0
 ```
 
 ### Hot-path timer, async sink
 
-Lowest-overhead profile: hot-path timer format plus the async sink, measured under the threaded stress workload.
+Lowest-overhead profile: hot-path timer format plus the async sink, measured under the threaded stress workload with a 64 KiB async handoff size.
 
 ```bash
-python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_BENCH_SINK=ASYNC --env SCOPE_TIMER_BENCH_SINK_BYTES=4096 --env SCOPE_TIMER_BENCH_THREADS=4 --env SCOPE_TIMER_BENCH_TIMER=HOTPATH --env SCOPE_TIMER_WALLTIME=0
+python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_BENCH_SINK=ASYNC --env SCOPE_TIMER_BENCH_SINK_BYTES=65536 --env SCOPE_TIMER_BENCH_THREADS=4 --env SCOPE_TIMER_BENCH_TIMER=HOTPATH --env SCOPE_TIMER_WALLTIME=0
+```
+
+### Hot-path timer, null sink
+
+Hot-path timer routed to the no-op sink so the benchmark shows the floor for ScopeTimer's own bookkeeping without output I/O.
+
+```bash
+python3 scripts/benchmark_demo.py --binary ./build-bench/Benchmark --scenario hotpath-bench --iterations 5 --runs 8 --env SCOPE_TIMER_BENCH_SINK=NULL --env SCOPE_TIMER_BENCH_TIMER=HOTPATH --env SCOPE_TIMER_WALLTIME=0
 ```

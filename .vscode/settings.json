@@ -3,6 +3,7 @@
         "connectionId": "stephenlclarke",
         "projectKey": "stephenlclarke_ScopeTimer"
     },
+    "sonarlint.pathToCompileCommands": "/Users/sclarke/github/ScopeTimer/build/compile_commands.json",
     "files.associations": {
         "cctype": "cpp",
         "charconv": "cpp",

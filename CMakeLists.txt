@@ -142,6 +142,9 @@ if(TARGET Benchmark)
   add_test(NAME run_benchmark_buffered_hotpath COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_buffered_fast_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_async COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_null COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_null_standard_alias COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_noop_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_async_invalid_env COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_out_of_range_env COMMAND Benchmark --iterations=1)
   set_tests_properties(
@@ -153,6 +156,9 @@ if(TARGET Benchmark)
     run_benchmark_buffered_hotpath
     run_benchmark_buffered_fast_alias
     run_benchmark_async
+    run_benchmark_null
+    run_benchmark_null_standard_alias
+    run_benchmark_noop_alias
     run_benchmark_async_invalid_env
     run_benchmark_out_of_range_env
     PROPERTIES
@@ -178,10 +184,28 @@ if(TARGET Benchmark)
       ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=ASYNC"
   )
   set_tests_properties(
+    run_benchmark_null
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=NULL;SCOPE_TIMER_BENCH_TIMER=HOTPATH"
+  )
+  set_tests_properties(
     run_benchmark_async_invalid_env
     PROPERTIES
       WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
       ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=async;SCOPE_TIMER_BENCH_THREADS=bogus;SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
+  )
+  set_tests_properties(
+    run_benchmark_null_standard_alias
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=null"
+  )
+  set_tests_properties(
+    run_benchmark_noop_alias
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=noop"
   )
   set_tests_properties(
     run_benchmark_out_of_range_env
@@ -194,6 +218,47 @@ endif()
 if(TARGET scopetimer_tests)
   add_test(NAME run_scopetimer_tests COMMAND scopetimer_tests)
   set_tests_properties(run_scopetimer_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif()
+
+find_program(LEAKS_EXECUTABLE NAMES leaks)
+find_program(VALGRIND_EXECUTABLE NAMES valgrind)
+
+if(TARGET scopetimer_tests)
+  if(APPLE AND LEAKS_EXECUTABLE)
+    add_custom_target(leak_check
+      COMMENT "Run scopetimer_tests under macOS leaks"
+      COMMAND ${LEAKS_EXECUTABLE}
+              -quiet
+              -noContent
+              -atExit
+              --
+              $<TARGET_FILE:scopetimer_tests>
+      DEPENDS scopetimer_tests
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+      VERBATIM
+    )
+  elseif(UNIX AND NOT APPLE AND VALGRIND_EXECUTABLE)
+    add_custom_target(leak_check
+      COMMENT "Run scopetimer_tests under Valgrind leak checking"
+      COMMAND ${VALGRIND_EXECUTABLE}
+              --leak-check=full
+              --show-leak-kinds=all
+              --errors-for-leak-kinds=definite,indirect
+              --error-exitcode=1
+              --num-callers=20
+              $<TARGET_FILE:scopetimer_tests>
+      DEPENDS scopetimer_tests
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+      VERBATIM
+    )
+  else()
+    add_custom_target(leak_check
+      COMMENT "ERROR: leak_check requires macOS leaks or Linux Valgrind plus scopetimer_tests"
+      COMMAND ${CMAKE_COMMAND} -E echo "[leak_check] ERROR: install macOS leaks or Linux valgrind, and ensure scopetimer_tests is enabled."
+      COMMAND ${CMAKE_COMMAND} -E false
+      VERBATIM
+    )
+  endif()
 endif()
 
 # --- Performance comparison helper ---------------------------------------
@@ -221,8 +286,20 @@ set(DEMO_BENCH_ITERATIONS "5" CACHE STRING
     "Number of Benchmark iterations per benchmark run")
 set(DEMO_BENCH_RUNS "8" CACHE STRING
     "Number of alternating enabled/disabled benchmark runs")
-set(DEMO_BENCH_CXX_FLAGS "-O2" CACHE STRING
-    "Extra C++ flags used by the dedicated benchmark build")
+if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+  set(_DEMO_BENCH_DEFAULT_CXX_FLAGS "-O3")
+elseif(MSVC)
+  set(_DEMO_BENCH_DEFAULT_CXX_FLAGS "/O2")
+else()
+  set(_DEMO_BENCH_DEFAULT_CXX_FLAGS "-O3")
+endif()
+if(NOT DEFINED DEMO_BENCH_CXX_FLAGS OR DEMO_BENCH_CXX_FLAGS STREQUAL "-O2")
+  set(DEMO_BENCH_CXX_FLAGS "${_DEMO_BENCH_DEFAULT_CXX_FLAGS}" CACHE STRING
+      "Optimization flags used by the dedicated benchmark build without defining NDEBUG" FORCE)
+else()
+  set(DEMO_BENCH_CXX_FLAGS "${DEMO_BENCH_CXX_FLAGS}" CACHE STRING
+      "Optimization flags used by the dedicated benchmark build without defining NDEBUG")
+endif()
 set(DEMO_BENCH_THREADS "4" CACHE STRING
     "Worker thread count used by the benchmark matrix target")
 set(DEMO_BENCH_SINK_BYTES "4096" CACHE STRING
@@ -231,12 +308,26 @@ set(DEMO_BENCH_HISTORY_FILE "${CMAKE_SOURCE_DIR}/benchmarks/demo_benchmark_histo
     "History file updated by the benchmark matrix target")
 set(DEMO_BENCH_REPORT_FILE "${CMAKE_SOURCE_DIR}/BENCHMARK.md" CACHE FILEPATH
     "Markdown report updated by the benchmark matrix target")
+set(SCOPETIMER_HEADER_COVERAGE_BUILD_DIR "${CMAKE_BINARY_DIR}/scopetimer-header-coverage" CACHE PATH
+    "Directory used by the ScopeTimer.hpp header coverage target")
+set(SCOPETIMER_HEADER_COVERAGE_THRESHOLD "80" CACHE STRING
+    "Minimum ScopeTimer.hpp line coverage percentage enforced by the header coverage target")
 set(DOCS_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-docs" CACHE PATH
     "Dedicated build directory used by the automatic markdown refresh target")
 option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md and TESTS.md during the default build" ON)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 if(Python3_Interpreter_FOUND)
+  add_custom_target(scopetimer_header_coverage
+    COMMENT "Measure ScopeTimer.hpp with clang source-based coverage and enforce the configured threshold"
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/scripts/check_scope_timer_header_coverage.py
+            --repo-root ${CMAKE_SOURCE_DIR}
+            --build-dir ${SCOPETIMER_HEADER_COVERAGE_BUILD_DIR}
+            --threshold ${SCOPETIMER_HEADER_COVERAGE_THRESHOLD}
+    VERBATIM
+  )
+
   add_custom_target(demo_benchmark
     COMMENT "Build a clean optimized Benchmark binary and benchmark ScopeTimer enabled vs disabled"
     COMMAND ${CMAKE_COMMAND}
@@ -303,6 +394,13 @@ if(Python3_Interpreter_FOUND)
     )
   endif()
 else()
+  add_custom_target(scopetimer_header_coverage
+    COMMENT "ERROR: Python 3 is required for the ScopeTimer.hpp header coverage helper"
+    COMMAND ${CMAKE_COMMAND} -E echo "[scopetimer_header_coverage] ERROR: Python 3 interpreter not found."
+    COMMAND ${CMAKE_COMMAND} -E false
+    VERBATIM
+  )
+
   add_custom_target(demo_benchmark
     COMMENT "ERROR: Python 3 is required for the benchmark helper"
     COMMAND ${CMAKE_COMMAND} -E echo "[demo_benchmark] ERROR: Python 3 interpreter not found."
@@ -395,6 +493,11 @@ if(gcda)
   message(STATUS \"Removing stale .gcda files to avoid stamp mismatch\")
   file(REMOVE ${gcda})
 endif()
+file(GLOB_RECURSE gcov_json \"${CMAKE_BINARY_DIR}/*.gcov.json.gz\")
+if(gcov_json)
+  message(STATUS \"Removing stale .gcov.json.gz files to avoid gcovr merge conflicts\")
+  file(REMOVE ${gcov_json})
+endif()
 ")
 
 set(COVERAGE_EXCLUDE_ARGS
@@ -416,6 +519,7 @@ if(COVERAGE_READY)
             --gcov-executable ${GCOV_EXE}
             --root ${CMAKE_SOURCE_DIR}
             --object-directory ${CMAKE_BINARY_DIR}
+            --merge-mode-functions merge-use-line-min
             --sonarqube ${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
             --html-details ${CMAKE_BINARY_DIR}/coverage/index.html
             --gcov-ignore-errors=no_working_dir_found
@@ -425,6 +529,7 @@ if(COVERAGE_READY)
             --gcov-executable ${GCOV_EXE}
             --root ${CMAKE_SOURCE_DIR}
             --object-directory ${CMAKE_BINARY_DIR}
+            --merge-mode-functions merge-use-line-min
             --txt-summary
             --delete
             --gcov-ignore-errors=no_working_dir_found
