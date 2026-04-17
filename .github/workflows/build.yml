@@ -32,11 +32,11 @@ jobs:
       CTEST_OUTPUT_ON_FAILURE: "1"
 
     steps:
-      - name: Install prerequisites (cmake, ninja, coverage tools, valgrind, git, ca-certs, unzip, python3)
+      - name: Install prerequisites (cmake, ninja, coverage tools, valgrind, git, ca-certs, unzip, python3, java)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake ninja-build gcovr lcov valgrind git ca-certificates unzip jq python3
+            cmake ninja-build gcovr lcov valgrind git ca-certificates unzip jq python3 default-jre-headless
           update-ca-certificates
 
       - name: Checkout
@@ -49,6 +49,7 @@ jobs:
           gcc --version
           g++ --version
           gcov --version || true
+          java -version
           ninja --version
           cmake --version
 
@@ -101,6 +102,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_SCANNER_SKIP_JRE_PROVISIONING: "true"
         with:
           args: >
             --define sonar.organization=stephenlclarke
