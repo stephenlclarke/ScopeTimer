@@ -26,6 +26,9 @@ jobs:
       image: gcc:15
 
     env:
+      # Opt in now so CI proves the workflow is compatible before GitHub forces
+      # JavaScript actions onto Node 24 in June 2026.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       # Must match your sonar-project.properties:
       # sonar.cfamily.compile-commands=build/bw-output/compile_commands.json
       BUILD_WRAPPER_OUT_DIR: build/bw-output
@@ -40,7 +43,7 @@ jobs:
           update-ca-certificates
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -54,7 +57,7 @@ jobs:
           cmake --version
 
       - name: Install Sonar Build Wrapper
-        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v6
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v7
 
       # Equivalent to: rm -rf build && cmake -S . -B build
       - name: Configure (CMake • Debug • Ninja • GCC 15)
@@ -98,7 +101,7 @@ jobs:
 
       # Equivalent to: sonar-scanner
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
