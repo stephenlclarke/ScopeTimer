@@ -252,8 +252,9 @@ namespace xyzzy::scopetimer {
 
             template <std::size_t N>
             explicit LabelArg(const char (&literal)[N]) noexcept
-                : view_(literal, N ? N - 1 : 0),
-                  storageKind_(LabelStorageKind::Borrowed) {}
+                : view_(literal, N ? N - 1 : 0) {
+                storageKind_ = LabelStorageKind::Borrowed;
+            }
 
             explicit LabelArg(const char* s) {
                 if (s && *s) {
@@ -349,7 +350,9 @@ namespace xyzzy::scopetimer {
         public:
             virtual ~LogSink() = default;
             virtual void write(const char* data, std::size_t len) noexcept = 0;
-            virtual void flush() noexcept {}
+            virtual void flush() noexcept {
+                // Default sinks may be purely streaming and need no flush hook.
+            }
         };
 
         /**
@@ -462,6 +465,11 @@ namespace xyzzy::scopetimer {
                 });
             }
 
+            // These sink-state atomics are intentionally acquire/release or relaxed
+            // instead of seq_cst. They publish configuration chosen under
+            // sinkConfigMutex(), and stronger global ordering would add fences on the
+            // steady-state timer path without improving correctness. Sonar's blanket
+            // seq_cst rule is suppressed for this header in sonar-project.properties.
             const auto activeSink = activeSinkStorage().load(std::memory_order_acquire);
             if (len) {
                 if (activeSink != ActiveSink::ThreadBuffered) {
@@ -607,6 +615,8 @@ namespace xyzzy::scopetimer {
 
             if(tid == 0) {
                 static std::atomic<uint32_t> next{ 1 };
+                // Only uniqueness matters here; callers do not depend on any cross-thread
+                // ordering relationship with the assigned numeric IDs.
                 tid = next.fetch_add(1, std::memory_order_relaxed);
             }
 
@@ -1165,6 +1175,8 @@ namespace xyzzy::scopetimer {
             return detail::singletonStorage<detail::ThreadBufferFlushBytesTag, std::atomic<std::size_t>>(16U * 1024U);
         }
         static inline std::size_t threadBufferFlushBytes() noexcept {
+            // The threshold is configuration state written under sinkConfigMutex(); a
+            // relaxed load is sufficient and avoids an unnecessary fence per append.
             return threadBufferFlushBytesStorage().load(std::memory_order_relaxed);
         }
         static inline std::mutex& threadBufferRegistryMutex() noexcept {
@@ -1273,7 +1285,7 @@ namespace xyzzy::scopetimer {
             const auto states = snapshotThreadBuffers();
             const auto bufferedTarget = bufferedSinkTargetModeStorage().load(std::memory_order_acquire);
             const bool needsLock = bufferedSinkTargetNeedsLock(bufferedTarget);
-            std::unique_lock<std::mutex> sinkLock(outMutex(), std::defer_lock);
+            std::unique_lock sinkLock(outMutex(), std::defer_lock);
             if (needsLock) {
                 sinkLock.lock();
             }
@@ -1457,7 +1469,10 @@ namespace xyzzy::scopetimer {
                     continue;
                 }
 
-                iovecs[count].iov_base = const_cast<char*>(batch.data.data());
+                // POSIX writev() exposes iov_base as mutable even for write-only buffers.
+                // The payload bytes remain immutable; this cast only adapts the API's
+                // legacy type mismatch.
+                iovecs[count].iov_base = const_cast<char*>(batch.data.data()); // NOSONAR: writev() reads from iov_base but declares it mutable.
                 iovecs[count].iov_len = batch.size;
                 ++count;
 

@@ -19,6 +19,8 @@ from pathlib import Path
 BUILD_HEAD_LINES = 120
 BUILD_TAIL_LINES = 60
 TEST_LOG_HEAD_LINES = 24
+BUILD_REVIEW_CONFIGURE_CMD = "cmake -S . -B build-review"
+BASH_FENCE = "```bash"
 
 FORMAT_SECTIONS = [
     ("Testing with default elapsed time formatting", None),
@@ -185,8 +187,8 @@ def refresh_build_doc(
         "for the current platform: `leaks` on macOS and `valgrind` on Linux.",
         "Run it with:",
         "",
-        "```bash",
-        "cmake -S . -B build-review",
+        BASH_FENCE,
+        BUILD_REVIEW_CONFIGURE_CMD,
         "cmake --build build-review --target leak_check",
         "```",
         "",
@@ -195,8 +197,8 @@ def refresh_build_doc(
         "clang source-based coverage and enforces the configured line-coverage",
         "threshold (default `80%`). Run it with:",
         "",
-        "```bash",
-        "cmake -S . -B build-review",
+        BASH_FENCE,
+        BUILD_REVIEW_CONFIGURE_CMD,
         "cmake --build build-review --target scopetimer_header_coverage",
         "```",
         "",
@@ -207,8 +209,8 @@ def refresh_build_doc(
         "`cmake --build` path so local builds stay fast. Run them explicitly",
         "with:",
         "",
-        "```bash",
-        "cmake -S . -B build-review",
+        BASH_FENCE,
+        BUILD_REVIEW_CONFIGURE_CMD,
         "cmake --build build-review --target demo_benchmark",
         "cmake --build build-review --target demo_benchmark_matrix",
         "```",
@@ -231,7 +233,7 @@ def refresh_build_doc(
         "",
         "<!-- markdownlint-disable MD013 -->",
         "",
-        "```bash",
+        BASH_FENCE,
         *composite_cmd,
         "> sed -n '1,120p' ./build-docs.log",
         head,
@@ -327,7 +329,7 @@ def refresh_tests_doc(
     for heading, fmt in FORMAT_SECTIONS:
         lines.append(f"## {heading}")
         lines.append("")
-        lines.append("```bash")
+        lines.append(BASH_FENCE)
         if fmt:
             cmd = (
                 f"> rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. "
@@ -349,7 +351,7 @@ def refresh_tests_doc(
         [
             "## Summarise the logging",
             "",
-            "```bash",
+            BASH_FENCE,
             f"> rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=NANOS "
             f"{demo_display} --iterations=1 >/dev/null 2>&1; "
             "scripts/process_scope_times.sh ./ScopeTimer.log | "

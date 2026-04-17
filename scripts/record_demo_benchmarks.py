@@ -682,7 +682,7 @@ def print_profile_result(profile: dict[str, Any], report: dict[str, Any], compar
     print(f"comparison:           {comparison['summary']}")
 
 
-def main() -> int:
+def main() -> None:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent.parent
     history_path = Path(args.history_file)
@@ -692,7 +692,7 @@ def main() -> int:
         history = load_history(history_path)
         save_report(report_path, history, repo_root, history_path)
         print(f"Saved benchmark report: {report_path}")
-        return 0
+        return
 
     if not args.binary:
         raise SystemExit("--binary is required unless --refresh-report-only is used")
@@ -753,8 +753,8 @@ def main() -> int:
 
     print(f"Saved benchmark history: {history_path}")
     print(f"Saved benchmark report: {report_path}")
-    return 0
+    return
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

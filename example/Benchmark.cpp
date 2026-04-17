@@ -139,8 +139,12 @@ class BenchSinkScope {
 public:
     class NullLogSink final : public ::xyzzy::scopetimer::ScopeTimer::LogSink {
     public:
-        void write(const char*, std::size_t) noexcept override {}
-        void flush() noexcept override {}
+        void write(const char*, std::size_t) noexcept override {
+            // Intentionally drop benchmark output so null-sink runs measure framework cost only.
+        }
+        void flush() noexcept override {
+            // Intentionally empty: the null sink never buffers data.
+        }
     };
 
     BenchSinkScope() {
