@@ -16,6 +16,25 @@ See also:
 it passes the active CMake build directory through to the scanner so
 out-of-tree builds analyze the right artifacts.
 
+`leak_check` runs `scopetimer_tests` under the native leak detector
+for the current platform: `leaks` on macOS and `valgrind` on Linux.
+Run it with:
+
+```bash
+cmake -S . -B build-review
+cmake --build build-review --target leak_check
+```
+
+`scopetimer_header_coverage` is the header-only coverage gate for
+`include/ScopeTimer.hpp`. It rebuilds `test/ScopeTimerTest.cpp` with
+clang source-based coverage and enforces the configured line-coverage
+threshold (default `80%`). Run it with:
+
+```bash
+cmake -S . -B build-review
+cmake --build build-review --target scopetimer_header_coverage
+```
+
 `Demo` is the educational example app. The dedicated overhead workload
 now lives in `example/Benchmark.cpp`.
 
@@ -30,8 +49,10 @@ cmake --build build-review --target demo_benchmark_matrix
 ```
 
 These targets configure a dedicated `build-bench` tree with coverage
-disabled and `-O2` enabled, then build and benchmark the `Benchmark`
-executable with `SCOPE_TIMER=0` and `SCOPE_TIMER=1` against the
+disabled and maximum benchmark-only optimization flags enabled
+(default `-O3` on GCC/Clang and `/O2` on MSVC) without defining
+`NDEBUG`, then build and benchmark the `Benchmark` executable with
+`SCOPE_TIMER=0` and `SCOPE_TIMER=1` against the
 CPU-bound `hotpath-bench` scenario.
 
 CI runs `demo_benchmark_matrix` automatically for pull requests and
@@ -70,12 +91,12 @@ The human-readable benchmark results now live in
 -- Arm64 build-wrapper download failed; trying x86 fallback: https://sonarcloud.io/static/cpp/build-wrapper-macosx-x86.zip
 -- Installed build-wrapper locally: /Users/sclarke/github/ScopeTimer/build-docs/tools/build-wrapper-macosx-x86/build-wrapper-macosx-x86
 -- Using Sonar build-wrapper: /Users/sclarke/github/ScopeTimer/build-docs/tools/build-wrapper-macosx-x86/build-wrapper-macosx-x86
--- Configuring done (1.2s)
+-- Configuring done (1.6s)
 -- Generating done (0.0s)
 -- Build files have been written to: /Users/sclarke/github/ScopeTimer/build-docs
-[ 50%] Building CXX object CMakeFiles/Demo.dir/example/Demo.cpp.o
 [ 50%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
 [ 50%] Building CXX object CMakeFiles/scopetimer_tests.dir/test/ScopeTimerTest.cpp.o
+[ 50%] Building CXX object CMakeFiles/Demo.dir/example/Demo.cpp.o
 [ 66%] Linking CXX executable Benchmark
 [ 83%] Linking CXX executable Demo
 [ 83%] Built target Benchmark
@@ -84,52 +105,58 @@ The human-readable benchmark results now live in
 [100%] Built target scopetimer_tests
 Test project /Users/sclarke/github/ScopeTimer/build-docs
       Start  1: run_demo
- 1/17 Test  #1: run_demo ............................   Passed    0.35 sec
+ 1/20 Test  #1: run_demo ............................   Passed    0.40 sec
       Start  2: run_demo_iterations
- 2/17 Test  #2: run_demo_iterations .................   Passed    0.05 sec
+ 2/20 Test  #2: run_demo_iterations .................   Passed    0.05 sec
       Start  3: run_demo_iterations_zero_flag
- 3/17 Test  #3: run_demo_iterations_zero_flag .......   Passed    0.05 sec
+ 3/20 Test  #3: run_demo_iterations_zero_flag .......   Passed    0.05 sec
       Start  4: run_demo_positional_iterations
- 4/17 Test  #4: run_demo_positional_iterations ......   Passed    0.11 sec
+ 4/20 Test  #4: run_demo_positional_iterations ......   Passed    0.11 sec
       Start  5: run_demo_positional_zero
- 5/17 Test  #5: run_demo_positional_zero ............   Passed    0.05 sec
+ 5/20 Test  #5: run_demo_positional_zero ............   Passed    0.05 sec
       Start  6: run_demo_help
- 6/17 Test  #6: run_demo_help .......................   Passed    0.01 sec
+ 6/20 Test  #6: run_demo_help .......................   Passed    0.01 sec
       Start  7: run_benchmark_default
- 7/17 Test  #7: run_benchmark_default ...............   Passed    0.27 sec
+ 7/20 Test  #7: run_benchmark_default ...............   Passed    0.31 sec
       Start  8: run_benchmark_iterations_zero
- 8/17 Test  #8: run_benchmark_iterations_zero .......   Passed    0.02 sec
+ 8/20 Test  #8: run_benchmark_iterations_zero .......   Passed    0.02 sec
       Start  9: run_benchmark_positional_zero
- 9/17 Test  #9: run_benchmark_positional_zero .......   Passed    0.02 sec
+ 9/20 Test  #9: run_benchmark_positional_zero .......   Passed    0.02 sec
       Start 10: run_benchmark_help
-10/17 Test #10: run_benchmark_help ..................   Passed    0.01 sec
+10/20 Test #10: run_benchmark_help ..................   Passed    0.01 sec
       Start 11: run_benchmark_invalid_scenario
-11/17 Test #11: run_benchmark_invalid_scenario ......   Passed    0.01 sec
+11/20 Test #11: run_benchmark_invalid_scenario ......   Passed    0.01 sec
       Start 12: run_benchmark_buffered_hotpath
-12/17 Test #12: run_benchmark_buffered_hotpath ......   Passed    0.02 sec
+12/20 Test #12: run_benchmark_buffered_hotpath ......   Passed    0.01 sec
       Start 13: run_benchmark_buffered_fast_alias
-13/17 Test #13: run_benchmark_buffered_fast_alias ...   Passed    0.08 sec
+13/20 Test #13: run_benchmark_buffered_fast_alias ...   Passed    0.02 sec
       Start 14: run_benchmark_async
-14/17 Test #14: run_benchmark_async .................   Passed    0.01 sec
-      Start 15: run_benchmark_async_invalid_env
-15/17 Test #15: run_benchmark_async_invalid_env .....   Passed    0.01 sec
-      Start 16: run_benchmark_out_of_range_env
-16/17 Test #16: run_benchmark_out_of_range_env ......   Passed    0.02 sec
-      Start 17: run_scopetimer_tests
-17/17 Test #17: run_scopetimer_tests ................   Passed    0.71 sec
+14/20 Test #14: run_benchmark_async .................   Passed    0.01 sec
+      Start 15: run_benchmark_null
+15/20 Test #15: run_benchmark_null ..................   Passed    0.01 sec
+      Start 16: run_benchmark_null_standard_alias
+16/20 Test #16: run_benchmark_null_standard_alias ...   Passed    0.01 sec
+      Start 17: run_benchmark_noop_alias
+17/20 Test #17: run_benchmark_noop_alias ............   Passed    0.01 sec
+      Start 18: run_benchmark_async_invalid_env
+18/20 Test #18: run_benchmark_async_invalid_env .....   Passed    0.01 sec
+      Start 19: run_benchmark_out_of_range_env
+19/20 Test #19: run_benchmark_out_of_range_env ......   Passed    0.02 sec
+      Start 20: run_scopetimer_tests
+20/20 Test #20: run_scopetimer_tests ................   Passed    0.72 sec
 
-100% tests passed, 0 tests failed out of 17
+100% tests passed, 0 tests failed out of 20
 
-Total Test time (real) =   1.81 sec
+Total Test time (real) =   1.87 sec
 [100%] Run sonar build-wrapper, generate coverage, then run sonar-scanner
 [100%] Capture clean build with Sonar build-wrapper -> /Users/sclarke/github/ScopeTimer/build-docs/bw-output
 [ 50%] Building CXX object CMakeFiles/Demo.dir/example/Demo.cpp.o
-[ 50%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
 [ 50%] Building CXX object CMakeFiles/scopetimer_tests.dir/test/ScopeTimerTest.cpp.o
+[ 50%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
 [ 66%] Linking CXX executable Benchmark
 [ 83%] Linking CXX executable Demo
-[ 83%] Built target Demo
 [ 83%] Built target Benchmark
+[ 83%] Built target Demo
 [100%] Linking CXX executable scopetimer_tests
 [100%] Built target scopetimer_tests
 Built target sonar_bw
@@ -140,98 +167,92 @@ Built target sonar_bw
 -- Removing stale .gcda files to avoid stamp mismatch
 Test project /Users/sclarke/github/ScopeTimer/build-docs
       Start  1: run_demo
- 1/17 Test  #1: run_demo ............................   Passed    0.34 sec
+ 1/20 Test  #1: run_demo ............................   Passed    0.43 sec
       Start  2: run_demo_iterations
- 2/17 Test  #2: run_demo_iterations .................   Passed    0.05 sec
+ 2/20 Test  #2: run_demo_iterations .................   Passed    0.05 sec
       Start  3: run_demo_iterations_zero_flag
- 3/17 Test  #3: run_demo_iterations_zero_flag .......   Passed    0.05 sec
+ 3/20 Test  #3: run_demo_iterations_zero_flag .......   Passed    0.05 sec
       Start  4: run_demo_positional_iterations
- 4/17 Test  #4: run_demo_positional_iterations ......   Passed    0.10 sec
+ 4/20 Test  #4: run_demo_positional_iterations ......   Passed    0.11 sec
       Start  5: run_demo_positional_zero
- 5/17 Test  #5: run_demo_positional_zero ............   Passed    0.05 sec
+ 5/20 Test  #5: run_demo_positional_zero ............   Passed    0.05 sec
       Start  6: run_demo_help
- 6/17 Test  #6: run_demo_help .......................   Passed    0.01 sec
+ 6/20 Test  #6: run_demo_help .......................   Passed    0.01 sec
       Start  7: run_benchmark_default
- 7/17 Test  #7: run_benchmark_default ...............   Passed    0.26 sec
+ 7/20 Test  #7: run_benchmark_default ...............   Passed    0.33 sec
       Start  8: run_benchmark_iterations_zero
- 8/17 Test  #8: run_benchmark_iterations_zero .......   Passed    0.02 sec
+ 8/20 Test  #8: run_benchmark_iterations_zero .......   Passed    0.03 sec
       Start  9: run_benchmark_positional_zero
- 9/17 Test  #9: run_benchmark_positional_zero .......   Passed    0.02 sec
+ 9/20 Test  #9: run_benchmark_positional_zero .......   Passed    0.02 sec
       Start 10: run_benchmark_help
-10/17 Test #10: run_benchmark_help ..................   Passed    0.01 sec
+10/20 Test #10: run_benchmark_help ..................   Passed    0.01 sec
       Start 11: run_benchmark_invalid_scenario
-11/17 Test #11: run_benchmark_invalid_scenario ......   Passed    0.01 sec
+11/20 Test #11: run_benchmark_invalid_scenario ......   Passed    0.01 sec
       Start 12: run_benchmark_buffered_hotpath
-12/17 Test #12: run_benchmark_buffered_hotpath ......   Passed    0.01 sec
+12/20 Test #12: run_benchmark_buffered_hotpath ......   Passed    0.01 sec
       Start 13: run_benchmark_buffered_fast_alias
-13/17 Test #13: run_benchmark_buffered_fast_alias ...   Passed    0.08 sec
+13/20 Test #13: run_benchmark_buffered_fast_alias ...   Passed    0.02 sec
       Start 14: run_benchmark_async
-14/17 Test #14: run_benchmark_async .................   Passed    0.01 sec
-      Start 15: run_benchmark_async_invalid_env
-15/17 Test #15: run_benchmark_async_invalid_env .....   Passed    0.01 sec
-      Start 16: run_benchmark_out_of_range_env
-16/17 Test #16: run_benchmark_out_of_range_env ......   Passed    0.02 sec
-      Start 17: run_scopetimer_tests
 > tail -n 60 ./build-docs.log
-    Load cache: Begin: 2026-04-17T16:36:15.320717Z, End: 2026-04-17T16:36:15.320724Z, Duration: 00:00:00.000
-  Create runtime call graph: Begin: 2026-04-17T16:36:15.320794Z, End: 2026-04-17T16:36:15.398878Z, Duration: 00:00:00.078
-    Variable Type Analysis #1: Begin: 2026-04-17T16:36:15.320959Z, End: 2026-04-17T16:36:15.356326Z, Duration: 00:00:00.035
-      Create runtime type propagation graph: Begin: 2026-04-17T16:36:15.321433Z, End: 2026-04-17T16:36:15.335772Z, Duration: 00:00:00.014
-      Run SCC (Tarjan) on 14889 nodes: Begin: 2026-04-17T16:36:15.335916Z, End: 2026-04-17T16:36:15.342675Z, Duration: 00:00:00.006
-      Propagate runtime types to strongly connected components: Begin: 2026-04-17T16:36:15.342713Z, End: 2026-04-17T16:36:15.356307Z, Duration: 00:00:00.013
-    Variable Type Analysis #2: Begin: 2026-04-17T16:36:15.359290Z, End: 2026-04-17T16:36:15.396554Z, Duration: 00:00:00.037
-      Create runtime type propagation graph: Begin: 2026-04-17T16:36:15.359293Z, End: 2026-04-17T16:36:15.374657Z, Duration: 00:00:00.015
-      Run SCC (Tarjan) on 14713 nodes: Begin: 2026-04-17T16:36:15.374754Z, End: 2026-04-17T16:36:15.381549Z, Duration: 00:00:00.006
-      Propagate runtime types to strongly connected components: Begin: 2026-04-17T16:36:15.381583Z, End: 2026-04-17T16:36:15.396501Z, Duration: 00:00:00.014
-  Load config: Begin: 2026-04-17T16:36:15.398912Z, End: 2026-04-17T16:36:15.481352Z, Duration: 00:00:00.082
-  Compute entry points: Begin: 2026-04-17T16:36:15.481404Z, End: 2026-04-17T16:36:15.494749Z, Duration: 00:00:00.013
-  Slice call graph: Begin: 2026-04-17T16:36:15.494832Z, End: 2026-04-17T16:36:15.495108Z, Duration: 00:00:00.000
-  Live variable analysis: Begin: 2026-04-17T16:36:15.495119Z, End: 2026-04-17T16:36:15.497577Z, Duration: 00:00:00.002
-  Taint analysis for python: Begin: 2026-04-17T16:36:15.497614Z, End: 2026-04-17T16:36:15.544568Z, Duration: 00:00:00.046
-  Report issues: Begin: 2026-04-17T16:36:15.544589Z, End: 2026-04-17T16:36:15.545460Z, Duration: 00:00:00.000
-  Store cache: Begin: 2026-04-17T16:36:15.545720Z, End: 2026-04-17T16:36:15.548594Z, Duration: 00:00:00.002
-17:36:15.549 INFO  python security sensor peak memory: 673 MB
-17:36:15.549 INFO  Sensor PythonSecuritySensor [security] (done) | time=525ms
-17:36:15.551 INFO  ------------- Run sensors on project
-17:36:15.606 INFO  Sensor PythonArchitectureSensor [architecture]
-17:36:15.635 INFO  Found 1 potential Udg file location(s) for "py" in "/Users/sclarke/github/ScopeTimer/.scannerwork"
-17:36:15.635 INFO  - /Users/sclarke/github/ScopeTimer/.scannerwork/architecture/py
-17:36:15.642 INFO  Architecture analysis is enabled with the following features: legacy, discovery, flaws, smells, deviations, directives
-17:36:15.643 INFO  * Protobuf reading starting | memory total=924 | free=356 | used=567 (MB)
-17:36:15.643 INFO  * Reading SonarArchitecture UDG data from directory "/Users/sclarke/github/ScopeTimer/.scannerwork/architecture/py"
-17:36:15.698 INFO  * Files successfully loaded: "3" out of "3"
-17:36:15.698 INFO  * Purging externals (components not scanned) from graphs
-17:36:15.698 INFO  * Purging excluded nodes from graphs
-17:36:15.698 INFO  * Protobuf reading complete | memory total=924 | free=344 | used=579 (MB)
-17:36:15.706 INFO  * Build architecture.graph.py.file_graph.default_perspective hierarchy graph complete (filtered=false) | memory total=924 | free=328 | used=595 (MB)
-17:36:15.709 INFO  No directives configured
-17:36:15.711 INFO  * No intended architecture defined or detected, using an empty model
-17:36:15.747 INFO  Sensor PythonArchitectureSensor [architecture] (done) | time=140ms
-17:36:15.747 INFO  Sensor Zero Coverage Sensor
-17:36:15.747 INFO  Sensor Zero Coverage Sensor (done) | time=0ms
-17:36:15.747 INFO  Sensor Architecture Telemetry [architecture]
-17:36:15.747 INFO  Sensor Architecture Telemetry [architecture] (done) | time=0ms
-17:36:15.803 INFO  ------------- Gather SCA dependencies on project
-17:36:16.253 INFO  Dependency analysis skipped
-17:36:16.262 INFO  CPD Executor Calculating CPD for 7 files
-17:36:16.274 INFO  CPD Executor CPD calculation finished (done) | time=12ms
-17:36:16.275 INFO  SCM Publisher SCM provider for this project is: git
-17:36:16.276 INFO  SCM Publisher 14 source files to be analyzed
-17:36:16.465 INFO  SCM Publisher 14/14 source files have been analyzed (done) | time=188ms
-17:36:16.469 INFO  SCM revision ID 'c08eb32a6673f7c8687c73de2788de488ebfcfdd'
-17:36:16.540 INFO  Analysis report generated in 72ms, dir size=735 KB
-17:36:16.568 INFO  Analysis report compressed in 29ms, zip size=182 KB
-17:36:16.817 INFO  Analysis report uploaded in 248ms
-17:36:16.818 INFO  ANALYSIS SUCCESSFUL, you can find the results at: https://sonarcloud.io/dashboard?id=stephenlclarke_ScopeTimer
-17:36:16.818 INFO  Note that you will be able to access the updated dashboard once the server has processed the submitted analysis report
-17:36:16.818 INFO  More about the report processing at https://sonarcloud.io/api/ce/task?id=AZ2cTOtD_RbgRMgFnqd5
-17:36:16.818 INFO  ------------- Upload SCA dependency files
-17:36:17.788 INFO  Successfully sent architecture data
-17:36:18.279 INFO  Sensor cache published successfully
-17:36:18.322 INFO  Analysis total time: 14.279 s
-17:36:18.322 INFO  SonarScanner Engine completed successfully
-17:36:18.801 INFO  EXECUTION SUCCESS
-17:36:18.802 INFO  Total time: 18.027s
+  Compute entry points: Begin: 2026-04-17T19:11:38.809947Z, End: 2026-04-17T19:11:38.831496Z, Duration: 00:00:00.021
+  Slice call graph: Begin: 2026-04-17T19:11:38.831569Z, End: 2026-04-17T19:11:38.831879Z, Duration: 00:00:00.000
+  Live variable analysis: Begin: 2026-04-17T19:11:38.831892Z, End: 2026-04-17T19:11:38.834672Z, Duration: 00:00:00.002
+  Taint analysis for python: Begin: 2026-04-17T19:11:38.834717Z, End: 2026-04-17T19:11:38.889350Z, Duration: 00:00:00.054
+  Report issues: Begin: 2026-04-17T19:11:38.889378Z, End: 2026-04-17T19:11:38.890314Z, Duration: 00:00:00.000
+  Store cache: Begin: 2026-04-17T19:11:38.890589Z, End: 2026-04-17T19:11:38.894813Z, Duration: 00:00:00.004
+20:11:38.895 INFO  python security sensor peak memory: 775 MB
+20:11:38.895 INFO  Sensor PythonSecuritySensor [security] (done) | time=550ms
+20:11:38.898 INFO  ------------- Run sensors on project
+20:11:38.954 INFO  Sensor PythonArchitectureSensor [architecture]
+20:11:38.986 INFO  Found 1 potential Udg file location(s) for "py" in "/Users/sclarke/github/ScopeTimer/.scannerwork"
+20:11:38.986 INFO  - /Users/sclarke/github/ScopeTimer/.scannerwork/architecture/py
+20:11:38.992 INFO  Architecture analysis is enabled with the following features: legacy, discovery, flaws, smells, deviations, directives
+20:11:38.994 INFO  * Protobuf reading starting | memory total=1440 | free=640 | used=799 (MB)
+20:11:38.994 INFO  * Reading SonarArchitecture UDG data from directory "/Users/sclarke/github/ScopeTimer/.scannerwork/architecture/py"
+20:11:39.050 INFO  * Files successfully loaded: "4" out of "4"
+20:11:39.050 INFO  * Purging externals (components not scanned) from graphs
+20:11:39.050 INFO  * Purging excluded nodes from graphs
+20:11:39.051 INFO  * Protobuf reading complete | memory total=1440 | free=626 | used=813 (MB)
+20:11:39.059 INFO  * Build architecture.graph.py.file_graph.default_perspective hierarchy graph complete (filtered=false) | memory total=1440 | free=592 | used=847 (MB)
+20:11:39.062 INFO  No directives configured
+20:11:39.064 INFO  * No intended architecture defined or detected, using an empty model
+20:11:39.102 INFO  Sensor PythonArchitectureSensor [architecture] (done) | time=147ms
+20:11:39.102 INFO  Sensor Zero Coverage Sensor
+20:11:39.103 INFO  Sensor Zero Coverage Sensor (done) | time=0ms
+20:11:39.103 INFO  Sensor Architecture Telemetry [architecture]
+20:11:39.103 INFO  Sensor Architecture Telemetry [architecture] (done) | time=0ms
+20:11:39.162 INFO  ------------- Gather SCA dependencies on project
+20:11:39.381 INFO  Dependency analysis skipped
+20:11:39.384 INFO  CPD Executor Calculating CPD for 8 files
+20:11:39.391 INFO  CPD Executor CPD calculation finished (done) | time=7ms
+20:11:39.391 INFO  SCM Publisher SCM provider for this project is: git
+20:11:39.392 INFO  SCM Publisher 15 source files to be analyzed
+20:11:39.573 INFO  SCM Publisher 6/15 source files have been analyzed (done) | time=181ms
+20:11:39.574 WARN  Missing blame information for the following files:
+20:11:39.574 WARN    * scripts/record_demo_benchmarks.py
+20:11:39.574 WARN    * benchmarks/demo_benchmark_history.json
+20:11:39.574 WARN    * test/ScopeTimerTest.cpp
+20:11:39.574 WARN    * scripts/check_scope_timer_header_coverage.py
+20:11:39.574 WARN    * example/Benchmark.cpp
+20:11:39.574 WARN    * include/ScopeTimer.hpp
+20:11:39.574 WARN    * scripts/refresh_docs.py
+20:11:39.574 WARN    * example/Demo.cpp
+20:11:39.574 WARN    * .github/workflows/build.yml
+20:11:39.574 WARN  This may lead to missing/broken features in SonarCloud
+20:11:39.577 INFO  SCM revision ID '01f54574a5c4e998566a15ecfb36e9fcfbd4221f'
+20:11:39.650 INFO  Analysis report generated in 75ms, dir size=882 KB
+20:11:39.679 INFO  Analysis report compressed in 28ms, zip size=209 KB
+20:11:39.917 INFO  Analysis report uploaded in 238ms
+20:11:39.917 INFO  ANALYSIS SUCCESSFUL, you can find the results at: https://sonarcloud.io/dashboard?id=stephenlclarke_ScopeTimer
+20:11:39.917 INFO  Note that you will be able to access the updated dashboard once the server has processed the submitted analysis report
+20:11:39.917 INFO  More about the report processing at https://sonarcloud.io/api/ce/task?id=AZ2c2y2-kgidx4EjYzhp
+20:11:39.917 INFO  ------------- Upload SCA dependency files
+20:11:40.846 INFO  Successfully sent architecture data
+20:11:41.245 INFO  Sensor cache published successfully
+20:11:41.271 INFO  Analysis total time: 13.927 s
+20:11:41.271 INFO  SonarScanner Engine completed successfully
+20:11:41.744 INFO  EXECUTION SUCCESS
+20:11:41.745 INFO  Total time: 17.742s
 Built target sonar_scan
 ```
 

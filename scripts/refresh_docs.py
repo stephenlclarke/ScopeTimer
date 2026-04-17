@@ -19,6 +19,8 @@ from pathlib import Path
 BUILD_HEAD_LINES = 120
 BUILD_TAIL_LINES = 60
 TEST_LOG_HEAD_LINES = 24
+BUILD_REVIEW_CONFIGURE_CMD = "cmake -S . -B build-review"
+BASH_FENCE = "```bash"
 
 FORMAT_SECTIONS = [
     ("Testing with default elapsed time formatting", None),
@@ -181,6 +183,25 @@ def refresh_build_doc(
         "it passes the active CMake build directory through to the scanner so",
         "out-of-tree builds analyze the right artifacts.",
         "",
+        "`leak_check` runs `scopetimer_tests` under the native leak detector",
+        "for the current platform: `leaks` on macOS and `valgrind` on Linux.",
+        "Run it with:",
+        "",
+        BASH_FENCE,
+        BUILD_REVIEW_CONFIGURE_CMD,
+        "cmake --build build-review --target leak_check",
+        "```",
+        "",
+        "`scopetimer_header_coverage` is the header-only coverage gate for",
+        "`include/ScopeTimer.hpp`. It rebuilds `test/ScopeTimerTest.cpp` with",
+        "clang source-based coverage and enforces the configured line-coverage",
+        "threshold (default `80%`). Run it with:",
+        "",
+        BASH_FENCE,
+        BUILD_REVIEW_CONFIGURE_CMD,
+        "cmake --build build-review --target scopetimer_header_coverage",
+        "```",
+        "",
         "`Demo` is the educational example app. The dedicated overhead workload",
         "now lives in `example/Benchmark.cpp`.",
         "",
@@ -188,15 +209,17 @@ def refresh_build_doc(
         "`cmake --build` path so local builds stay fast. Run them explicitly",
         "with:",
         "",
-        "```bash",
-        "cmake -S . -B build-review",
+        BASH_FENCE,
+        BUILD_REVIEW_CONFIGURE_CMD,
         "cmake --build build-review --target demo_benchmark",
         "cmake --build build-review --target demo_benchmark_matrix",
         "```",
         "",
         "These targets configure a dedicated `build-bench` tree with coverage",
-        "disabled and `-O2` enabled, then build and benchmark the `Benchmark`",
-        "executable with `SCOPE_TIMER=0` and `SCOPE_TIMER=1` against the",
+        "disabled and maximum benchmark-only optimization flags enabled",
+        "(default `-O3` on GCC/Clang and `/O2` on MSVC) without defining",
+        "`NDEBUG`, then build and benchmark the `Benchmark` executable with",
+        "`SCOPE_TIMER=0` and `SCOPE_TIMER=1` against the",
         "CPU-bound `hotpath-bench` scenario.",
         "",
         "CI runs `demo_benchmark_matrix` automatically for pull requests and",
@@ -210,7 +233,7 @@ def refresh_build_doc(
         "",
         "<!-- markdownlint-disable MD013 -->",
         "",
-        "```bash",
+        BASH_FENCE,
         *composite_cmd,
         "> sed -n '1,120p' ./build-docs.log",
         head,
@@ -306,7 +329,7 @@ def refresh_tests_doc(
     for heading, fmt in FORMAT_SECTIONS:
         lines.append(f"## {heading}")
         lines.append("")
-        lines.append("```bash")
+        lines.append(BASH_FENCE)
         if fmt:
             cmd = (
                 f"> rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. "
@@ -328,7 +351,7 @@ def refresh_tests_doc(
         [
             "## Summarise the logging",
             "",
-            "```bash",
+            BASH_FENCE,
             f"> rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=NANOS "
             f"{demo_display} --iterations=1 >/dev/null 2>&1; "
             "scripts/process_scope_times.sh ./ScopeTimer.log | "

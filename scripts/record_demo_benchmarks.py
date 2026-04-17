@@ -4,7 +4,8 @@ Run the reproducible ScopeTimer benchmark matrix and update repo benchmark repor
 
 The machine-readable history is stored in JSON so benchmark drift can be tracked
 alongside code changes. A human-readable Markdown report is also refreshed as a
-snapshot of the latest benchmark run plus its delta from the previous one.
+snapshot of the latest benchmark run plus its delta from the last benchmark
+state checked in to main.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ SCHEMA_VERSION = 1
 NOISE_TOLERANCE_PCT = 2.0
 SINK_BYTES_PLACEHOLDER = "{sink_bytes}"
 THREADS_PLACEHOLDER = "{threads}"
+ASYNC_SINK_BYTES = "65536"
 DEFAULT_REPORT_CONFIG: dict[str, Any] = {
     "binary": "./build-bench/Benchmark",
     "scenario": "hotpath-bench",
@@ -51,6 +53,18 @@ PROFILE_DEFS: list[dict[str, Any]] = [
             "the cost of dropping `start=` and `end=` timestamp formatting."
         ),
         "env": {"SCOPE_TIMER_WALLTIME": "0"},
+    },
+    {
+        "name": "standard_null_sink",
+        "label": "Standard timer, null sink",
+        "description": (
+            "Standard timer routed to a no-op sink so the benchmark measures "
+            "ScopeTimer framework overhead without output I/O."
+        ),
+        "env": {
+            "SCOPE_TIMER_BENCH_SINK": "NULL",
+            "SCOPE_TIMER_WALLTIME": "0",
+        },
     },
     {
         "name": "buffered_single_thread",
@@ -83,11 +97,12 @@ PROFILE_DEFS: list[dict[str, Any]] = [
         "label": "Standard timer, async sink",
         "description": (
             "Multi-threaded run with the async sink so flush work moves to the "
-            "background writer instead of the calling thread."
+            "background writer instead of the calling thread, using a 64 KiB "
+            "handoff size to reduce enqueue frequency."
         ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "ASYNC",
-            "SCOPE_TIMER_BENCH_SINK_BYTES": SINK_BYTES_PLACEHOLDER,
+            "SCOPE_TIMER_BENCH_SINK_BYTES": ASYNC_SINK_BYTES,
             "SCOPE_TIMER_BENCH_THREADS": THREADS_PLACEHOLDER,
             "SCOPE_TIMER_WALLTIME": "0",
         },
@@ -97,12 +112,26 @@ PROFILE_DEFS: list[dict[str, Any]] = [
         "label": "Hot-path timer, async sink",
         "description": (
             "Lowest-overhead profile: hot-path timer format plus the async sink, "
-            "measured under the threaded stress workload."
+            "measured under the threaded stress workload with a 64 KiB async "
+            "handoff size."
         ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "ASYNC",
-            "SCOPE_TIMER_BENCH_SINK_BYTES": SINK_BYTES_PLACEHOLDER,
+            "SCOPE_TIMER_BENCH_SINK_BYTES": ASYNC_SINK_BYTES,
             "SCOPE_TIMER_BENCH_THREADS": THREADS_PLACEHOLDER,
+            "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+            "SCOPE_TIMER_WALLTIME": "0",
+        },
+    },
+    {
+        "name": "hotpath_null_sink",
+        "label": "Hot-path timer, null sink",
+        "description": (
+            "Hot-path timer routed to the no-op sink so the benchmark shows "
+            "the floor for ScopeTimer's own bookkeeping without output I/O."
+        ),
+        "env": {
+            "SCOPE_TIMER_BENCH_SINK": "NULL",
             "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
             "SCOPE_TIMER_WALLTIME": "0",
         },
@@ -137,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cxx-flags",
-        default="-O2",
+        default="-O3",
         help="Compiler flags description saved into the history entry",
     )
     parser.add_argument(
@@ -171,6 +200,95 @@ def git_metadata(repo_root: Path) -> dict[str, Any]:
         "subject": run_git(["log", "-1", "--pretty=%s"], repo_root) or "unknown",
         "message": run_git(["log", "-1", "--pretty=%B"], repo_root) or "unknown",
         "dirty": bool(status),
+    }
+
+
+def git_ref_exists(repo_root: Path, ref: str) -> bool:
+    return bool(run_git(["rev-parse", "--verify", "--quiet", ref], repo_root))
+
+
+def repo_relative_path(path: Path, repo_root: Path) -> str | None:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def load_history_from_git_ref(path: Path, repo_root: Path, ref: str) -> dict[str, Any] | None:
+    repo_path = repo_relative_path(path, repo_root)
+    if not repo_path:
+        return None
+
+    completed = subprocess.run(
+        ["git", "show", f"{ref}:{repo_path}"],
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+
+    raw = completed.stdout.strip()
+    if not raw:
+        return {"schema_version": SCHEMA_VERSION, "history": []}
+
+    data = json.loads(raw)
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise SystemExit(
+            f"Unsupported benchmark history schema in {path} at {ref}: {data.get('schema_version')!r}"
+        )
+    if not isinstance(data.get("history"), list):
+        raise SystemExit(f"Invalid benchmark history format in {path} at {ref}")
+    return data
+
+
+def resolve_main_baseline_ref(repo_root: Path, branch_name: str) -> str | None:
+    if branch_name == "main":
+        return "HEAD"
+
+    for candidate in ("origin/main", "main"):
+        if git_ref_exists(repo_root, candidate):
+            return candidate
+    return None
+
+
+def resolve_main_baseline_entry(
+    repo_root: Path,
+    history_path: Path,
+    branch_name: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    baseline_ref = resolve_main_baseline_ref(repo_root, branch_name)
+    if not baseline_ref:
+        return None, None
+
+    baseline_history = load_history_from_git_ref(history_path, repo_root, baseline_ref)
+    if not baseline_history:
+        return None, baseline_ref
+
+    baseline_entries = baseline_history.get("history", [])
+    if not baseline_entries:
+        return None, baseline_ref
+
+    return baseline_entries[-1], baseline_ref
+
+
+def comparison_reference_metadata(
+    baseline_entry: dict[str, Any] | None,
+    baseline_ref: str | None,
+) -> dict[str, Any] | None:
+    if not baseline_entry:
+        return None
+
+    baseline_git = baseline_entry.get("git", {})
+    return {
+        "kind": "last_checked_in_main",
+        "resolved_ref": baseline_ref,
+        "recorded_at_utc": baseline_entry.get("recorded_at_utc"),
+        "commit": baseline_git.get("commit"),
+        "short_commit": baseline_git.get("short_commit"),
+        "branch": baseline_git.get("branch"),
     }
 
 
@@ -241,7 +359,8 @@ def profile_reference_lines(config: dict[str, Any]) -> list[str]:
             f"`iterations={config.get('iterations', DEFAULT_REPORT_CONFIG['iterations'])}`, "
             f"`runs={config.get('runs', DEFAULT_REPORT_CONFIG['runs'])}`, "
             f"`threads={config.get('threads', DEFAULT_REPORT_CONFIG['threads'])}`, "
-            f"and `sink_bytes={config.get('sink_bytes', DEFAULT_REPORT_CONFIG['sink_bytes'])}`."
+            f"and a default `sink_bytes={config.get('sink_bytes', DEFAULT_REPORT_CONFIG['sink_bytes'])}` "
+            "for profiles that do not override it below."
         ),
         "",
     ]
@@ -337,7 +456,11 @@ def comparison_delta_text(comparison: dict[str, Any]) -> str:
     )
 
 
-def render_report(history: dict[str, Any]) -> str:
+def render_report(
+    history: dict[str, Any],
+    repo_root: Path,
+    history_path: Path,
+) -> str:
     entries = history.get("history", [])
     latest = entries[-1] if entries else None
     doc_config = profile_doc_config(latest)
@@ -383,9 +506,16 @@ def render_report(history: dict[str, Any]) -> str:
         lines.extend(["", *profile_reference_lines(doc_config)])
         return "\n".join(lines)
 
-    previous = entries[-2] if len(entries) > 1 else None
     git = latest.get("git", {})
     config = latest.get("benchmark_config", {})
+    comparison_reference = latest.get("comparison_reference")
+    if not comparison_reference:
+        baseline_entry, baseline_ref = resolve_main_baseline_entry(
+            repo_root,
+            history_path,
+            git.get("branch", "unknown"),
+        )
+        comparison_reference = comparison_reference_metadata(baseline_entry, baseline_ref)
 
     lines.extend(
         [
@@ -411,31 +541,30 @@ def render_report(history: dict[str, Any]) -> str:
         ]
     )
 
-    if previous:
-        prev_git = previous.get("git", {})
+    if comparison_reference:
         lines.extend(
             [
                 (
-                    "- Previous benchmark: "
-                    f"`{previous.get('recorded_at_utc', 'unknown')}` "
-                    f"on `{prev_git.get('short_commit', 'unknown')}`"
+                    "- Comparison baseline: last benchmark checked in to `main`: "
+                    f"`{comparison_reference.get('recorded_at_utc', 'unknown')}` "
+                    f"on `{comparison_reference.get('short_commit', 'unknown')}`"
                 ),
                 "- Delta source: per-record overhead when available, otherwise mean overhead.",
             ]
         )
     else:
-        lines.append("- Previous benchmark: none recorded yet.")
+        lines.append("- Comparison baseline: no benchmark recorded on `main` yet.")
 
     lines.extend(
         [
             "",
-            "| Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs previous | Status |",
+            "| Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |",
             "| --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
 
     for profile in latest.get("results", []):
-        comparison = profile.get("comparison_to_previous", {})
+        comparison = profile.get("comparison_to_main_baseline", profile.get("comparison_to_previous", {}))
         lines.append(
             "| "
             f"{profile.get('label', profile.get('name', 'unknown'))} | "
@@ -460,34 +589,39 @@ def render_report(history: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def save_report(path: Path, history: dict[str, Any]) -> None:
+def save_report(
+    path: Path,
+    history: dict[str, Any],
+    repo_root: Path,
+    history_path: Path,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        handle.write(render_report(history).rstrip())
+        handle.write(render_report(history, repo_root, history_path).rstrip())
         handle.write("\n")
 
 
 def comparison_for_profile(
     current_report: dict[str, Any],
-    previous_entry: dict[str, Any] | None,
+    baseline_entry: dict[str, Any] | None,
     profile_name: str,
 ) -> dict[str, Any]:
-    if not previous_entry:
+    if not baseline_entry:
         return {
             "indicator": "baseline",
             "status": "baseline",
-            "summary": "baseline run",
+            "summary": "main baseline unavailable",
         }
 
     previous_profiles = {
-        profile.get("name"): profile for profile in previous_entry.get("results", [])
+        profile.get("name"): profile for profile in baseline_entry.get("results", [])
     }
     previous_profile = previous_profiles.get(profile_name)
     if not previous_profile:
         return {
             "indicator": "baseline",
             "status": "baseline",
-            "summary": "baseline run for this profile",
+            "summary": "main baseline unavailable for this profile",
         }
 
     metric_name = "approx_per_record_us"
@@ -521,7 +655,7 @@ def comparison_for_profile(
 
     unit = "us/record" if metric_name == "approx_per_record_us" else "s mean overhead"
     summary = (
-        f"{status} vs {previous_entry['git']['short_commit']} "
+        f"{status} vs {baseline_entry['git']['short_commit']} "
         f"({previous_value:.3f} -> {current_value:.3f} {unit}, {delta_pct:+.1f}%)"
     )
 
@@ -535,9 +669,9 @@ def comparison_for_profile(
         "delta_value": delta_value,
         "delta_pct": delta_pct,
         "summary": summary,
-        "previous_recorded_at_utc": previous_entry.get("recorded_at_utc"),
-        "previous_commit": previous_entry.get("git", {}).get("commit"),
-        "previous_short_commit": previous_entry.get("git", {}).get("short_commit"),
+        "previous_recorded_at_utc": baseline_entry.get("recorded_at_utc"),
+        "previous_commit": baseline_entry.get("git", {}).get("commit"),
+        "previous_short_commit": baseline_entry.get("git", {}).get("short_commit"),
         "tolerance_pct": NOISE_TOLERANCE_PCT,
     }
 
@@ -548,7 +682,7 @@ def print_profile_result(profile: dict[str, Any], report: dict[str, Any], compar
     print(f"comparison:           {comparison['summary']}")
 
 
-def main() -> int:
+def main() -> None:
     args = parse_args()
     repo_root = Path(__file__).resolve().parent.parent
     history_path = Path(args.history_file)
@@ -556,9 +690,9 @@ def main() -> int:
 
     if args.refresh_report_only:
         history = load_history(history_path)
-        save_report(report_path, history)
+        save_report(report_path, history, repo_root, history_path)
         print(f"Saved benchmark report: {report_path}")
-        return 0
+        return
 
     if not args.binary:
         raise SystemExit("--binary is required unless --refresh-report-only is used")
@@ -568,7 +702,12 @@ def main() -> int:
         raise SystemExit(f"Benchmark binary not found: {binary}")
 
     history = load_history(history_path)
-    previous_entry = history["history"][-1] if history["history"] else None
+    current_git = git_metadata(repo_root)
+    baseline_entry, baseline_ref = resolve_main_baseline_entry(
+        repo_root,
+        history_path,
+        current_git.get("branch", "unknown"),
+    )
 
     results: list[dict[str, Any]] = []
     for profile in PROFILE_DEFS:
@@ -580,7 +719,7 @@ def main() -> int:
             scenario=args.scenario,
             extra_env=env,
         )
-        comparison = comparison_for_profile(report, previous_entry, profile["name"])
+        comparison = comparison_for_profile(report, baseline_entry, profile["name"])
         print_profile_result(profile, report, comparison)
         results.append(
             {
@@ -588,13 +727,14 @@ def main() -> int:
                 "label": profile["label"],
                 "env": env,
                 **report,
-                "comparison_to_previous": comparison,
+                "comparison_to_main_baseline": comparison,
             }
         )
 
     entry = {
         "recorded_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "git": git_metadata(repo_root),
+        "git": current_git,
+        "comparison_reference": comparison_reference_metadata(baseline_entry, baseline_ref),
         "benchmark_config": {
             "binary": str(binary),
             "build_dir": args.build_dir,
@@ -609,12 +749,12 @@ def main() -> int:
     }
     history["history"].append(entry)
     save_history(history_path, history)
-    save_report(report_path, history)
+    save_report(report_path, history, repo_root, history_path)
 
     print(f"Saved benchmark history: {history_path}")
     print(f"Saved benchmark report: {report_path}")
-    return 0
+    return
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

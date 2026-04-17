@@ -47,6 +47,7 @@ enum class BenchSinkMode {
     Default,
     Buffered,
     Async,
+    Null,
 };
 
 enum class BenchTimerMode {
@@ -117,6 +118,9 @@ static BenchSinkMode benchSinkMode() {
         if (value == "ASYNC" || value == "async") {
             return BenchSinkMode::Async;
         }
+        if (value == "NULL" || value == "null" || value == "NOOP" || value == "noop") {
+            return BenchSinkMode::Null;
+        }
     }
     return BenchSinkMode::Default;
 }
@@ -133,6 +137,16 @@ static BenchTimerMode benchTimerMode() {
 
 class BenchSinkScope {
 public:
+    class NullLogSink final : public ::xyzzy::scopetimer::ScopeTimer::LogSink {
+    public:
+        void write(const char*, std::size_t) noexcept override {
+            // Intentionally drop benchmark output so null-sink runs measure framework cost only.
+        }
+        void flush() noexcept override {
+            // Intentionally empty: the null sink never buffers data.
+        }
+    };
+
     BenchSinkScope() {
         const std::size_t sinkBytes = positiveSizeEnvOrDefault("SCOPE_TIMER_BENCH_SINK_BYTES", 256U * 1024U);
         switch (benchSinkMode()) {
@@ -143,6 +157,10 @@ public:
             case BenchSinkMode::Async:
                 SCOPE_TIMER_ENABLE_ASYNC_SINK(sinkBytes);
                 async_ = true;
+                break;
+            case BenchSinkMode::Null:
+                ::xyzzy::scopetimer::ScopeTimer::setLogSink(nullSink_);
+                null_ = true;
                 break;
             case BenchSinkMode::Default:
                 break;
@@ -156,14 +174,19 @@ public:
         if (async_) {
             SCOPE_TIMER_DISABLE_ASYNC_SINK();
         }
+        if (null_) {
+            ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
+        }
     }
 
     BenchSinkScope(const BenchSinkScope&) = delete;
     BenchSinkScope& operator=(const BenchSinkScope&) = delete;
 
 private:
+    NullLogSink nullSink_{};
     bool buffered_{false};
     bool async_{false};
+    bool null_{false};
 };
 
 static void hotPathBenchmarkWorker(int rounds, BenchTimerMode timerMode) {
@@ -190,7 +213,6 @@ static void hotPathBenchmark(int iterations) {
     const int rounds = std::max(1, iterations) * 12;
     const int threadCount = positiveEnvOrDefault("SCOPE_TIMER_BENCH_THREADS", 1);
     const BenchTimerMode timerMode = benchTimerMode();
-    BenchSinkScope sinkScope;
 
     SCOPE_TIMER("hotPath:benchmark");
     if (threadCount == 1) {
@@ -220,7 +242,7 @@ static BenchmarkOptions parseOptions(int argc, char** argv) {
             std::cout << "Usage: Benchmark [--iterations=N] [--scenario=hotpath-bench]\n"
                          "The dedicated benchmark executable drives a CPU-bound ScopeTimer\n"
                          "stress workload used by the benchmark scripts and CMake targets.\n"
-                         "Benchmark env knobs: SCOPE_TIMER_BENCH_SINK=BUFFERED|ASYNC,\n"
+                         "Benchmark env knobs: SCOPE_TIMER_BENCH_SINK=BUFFERED|ASYNC|NULL,\n"
                          "SCOPE_TIMER_BENCH_SINK_BYTES=<bytes>, SCOPE_TIMER_BENCH_THREADS=<n>,\n"
                          "and SCOPE_TIMER_BENCH_TIMER=HOTPATH.\n";
             std::exit(0);
@@ -240,6 +262,7 @@ static BenchmarkOptions parseOptions(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+    BenchSinkScope sinkScope;
     SCOPE_TIMER("Benchmark::main");
 
     const BenchmarkOptions options = parseOptions(argc, argv);
