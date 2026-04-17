@@ -117,19 +117,48 @@ enable_testing()
 if(TARGET Demo)
   add_test(NAME run_demo COMMAND Demo)
   add_test(NAME run_demo_iterations COMMAND Demo --iterations=1)
+  add_test(NAME run_demo_iterations_zero_flag COMMAND Demo --iterations=0)
+  add_test(NAME run_demo_positional_iterations COMMAND Demo 2)
+  add_test(NAME run_demo_positional_zero COMMAND Demo 0)
   add_test(NAME run_demo_help COMMAND Demo --help)
-  set_tests_properties(run_demo PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
-  set_tests_properties(run_demo_iterations PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
-  set_tests_properties(run_demo_help PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  set_tests_properties(
+    run_demo
+    run_demo_iterations
+    run_demo_iterations_zero_flag
+    run_demo_positional_iterations
+    run_demo_positional_zero
+    run_demo_help
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+  )
 endif()
 
 if(TARGET Benchmark)
   add_test(NAME run_benchmark_default COMMAND Benchmark --iterations=1 --scenario=hotpath-bench)
+  add_test(NAME run_benchmark_iterations_zero COMMAND Benchmark --iterations=0 --scenario=hotpath-bench)
+  add_test(NAME run_benchmark_positional_zero COMMAND Benchmark 0)
   add_test(NAME run_benchmark_help COMMAND Benchmark --help)
+  add_test(NAME run_benchmark_invalid_scenario COMMAND Benchmark --scenario=bogus)
   add_test(NAME run_benchmark_buffered_hotpath COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_buffered_fast_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_async COMMAND Benchmark --iterations=1)
-  set_tests_properties(run_benchmark_default PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
-  set_tests_properties(run_benchmark_help PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  add_test(NAME run_benchmark_async_invalid_env COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_out_of_range_env COMMAND Benchmark --iterations=1)
+  set_tests_properties(
+    run_benchmark_default
+    run_benchmark_iterations_zero
+    run_benchmark_positional_zero
+    run_benchmark_help
+    run_benchmark_invalid_scenario
+    run_benchmark_buffered_hotpath
+    run_benchmark_buffered_fast_alias
+    run_benchmark_async
+    run_benchmark_async_invalid_env
+    run_benchmark_out_of_range_env
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+  )
+  set_tests_properties(run_benchmark_invalid_scenario PROPERTIES WILL_FAIL TRUE)
   set_tests_properties(
     run_benchmark_buffered_hotpath
     PROPERTIES
@@ -137,10 +166,28 @@ if(TARGET Benchmark)
       ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=BUFFERED;SCOPE_TIMER_BENCH_TIMER=HOTPATH;SCOPE_TIMER_BENCH_THREADS=2"
   )
   set_tests_properties(
+    run_benchmark_buffered_fast_alias
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=buffered;SCOPE_TIMER_BENCH_TIMER=fast;SCOPE_TIMER_BENCH_THREADS=0;SCOPE_TIMER_BENCH_SINK_BYTES=0"
+  )
+  set_tests_properties(
     run_benchmark_async
     PROPERTIES
       WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
       ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=ASYNC"
+  )
+  set_tests_properties(
+    run_benchmark_async_invalid_env
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=async;SCOPE_TIMER_BENCH_THREADS=bogus;SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
+  )
+  set_tests_properties(
+    run_benchmark_out_of_range_env
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "SCOPE_TIMER_BENCH_THREADS=9999999999999999999999999999;SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
   )
 endif()
 
@@ -350,9 +397,18 @@ if(gcda)
 endif()
 ")
 
+set(COVERAGE_EXCLUDE_ARGS
+  --exclude ".*_deps/.*"
+  --exclude ".*bw-output/.*"
+  --exclude ".*CMakeFiles/.*"
+  --exclude ".*build-wrapper-dump.json"
+  --exclude "(.*/)?test/.*"
+)
+
 if(COVERAGE_READY)
   add_custom_target(coverage DEPENDS Demo Benchmark ${TEST_TARGET}
     COMMENT "Run tests once and generate gcovr reports (SonarQube XML + HTML)"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_BINARY_DIR}/coverage
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
     COMMAND ${CMAKE_COMMAND} -P ${CMAKE_BINARY_DIR}/cmake/CleanGcda.cmake
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
@@ -362,15 +418,18 @@ if(COVERAGE_READY)
             --object-directory ${CMAKE_BINARY_DIR}
             --sonarqube ${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
             --html-details ${CMAKE_BINARY_DIR}/coverage/index.html
-            --print-summary
+            --gcov-ignore-errors=no_working_dir_found
+            --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
+            ${COVERAGE_EXCLUDE_ARGS}
+    COMMAND ${GCOVR_EXECUTABLE}
+            --gcov-executable ${GCOV_EXE}
+            --root ${CMAKE_SOURCE_DIR}
+            --object-directory ${CMAKE_BINARY_DIR}
+            --txt-summary
             --delete
             --gcov-ignore-errors=no_working_dir_found
             --gcov-ignore-parse-errors=negative_hits.warn_once_per_file
-            --exclude '.*_deps/.*'
-            --exclude '.*bw-output/.*'
-            --exclude '.*CMakeFiles/.*'
-            --exclude '.*build-wrapper-dump.json'
-            ${CMAKE_BINARY_DIR}
+            ${COVERAGE_EXCLUDE_ARGS}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     VERBATIM
   )
