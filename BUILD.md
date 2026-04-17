@@ -34,8 +34,8 @@ disabled and `-O2` enabled, then build and benchmark the `Benchmark`
 executable with `SCOPE_TIMER=0` and `SCOPE_TIMER=1` against the
 CPU-bound `hotpath-bench` scenario.
 
-Pull request CI runs `demo_benchmark_matrix` automatically for PR
-open and update events, then uploads the refreshed benchmark report
+CI runs `demo_benchmark_matrix` automatically for pull requests and
+for pushes to `main`, then uploads the refreshed benchmark report
 as an artifact.
 
 The human-readable benchmark results now live in
