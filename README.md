@@ -483,6 +483,11 @@ private:
 Build, coverage, Sonar, and benchmark-target usage now live in
 [BUILD.md](BUILD.md).
 
+Leak checking is platform-specific in this repo: `leak_check` uses
+macOS `leaks` on the MacBook and Valgrind on Linux. Benchmarks are kept
+local-only, so performance runs should be done on the MacBook before
+pushing rather than in GitHub Actions.
+
 ## Tests and log-format examples ##
 
 Elapsed-format examples and the log-summary pipeline now live in

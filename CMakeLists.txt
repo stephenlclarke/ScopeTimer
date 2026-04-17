@@ -241,6 +241,9 @@ if(TARGET scopetimer_tests)
     add_custom_target(leak_check
       COMMENT "Run scopetimer_tests under Valgrind leak checking"
       COMMAND ${VALGRIND_EXECUTABLE}
+              # The test suite intentionally stress-tests threading with 1000
+              # workers, which exceeds Valgrind's default 500-thread limit.
+              --max-threads=2000
               --leak-check=full
               --show-leak-kinds=all
               --errors-for-leak-kinds=definite,indirect

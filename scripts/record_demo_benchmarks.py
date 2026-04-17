@@ -753,7 +753,6 @@ def main() -> None:
 
     print(f"Saved benchmark history: {history_path}")
     print(f"Saved benchmark report: {report_path}")
-    return
 
 
 if __name__ == "__main__":
