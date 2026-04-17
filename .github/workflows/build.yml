@@ -36,7 +36,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake ninja-build gcovr lcov valgrind git ca-certificates unzip jq python3 openjdk-17-jre-headless
+            cmake ninja-build gcovr lcov valgrind git ca-certificates unzip jq python3 default-jre-headless
           update-ca-certificates
 
       - name: Checkout
