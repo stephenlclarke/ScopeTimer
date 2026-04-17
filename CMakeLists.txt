@@ -240,7 +240,12 @@ if(TARGET scopetimer_tests)
   elseif(UNIX AND NOT APPLE AND VALGRIND_EXECUTABLE)
     add_custom_target(leak_check
       COMMENT "Run scopetimer_tests under Valgrind leak checking"
-      COMMAND ${VALGRIND_EXECUTABLE}
+      COMMAND ${CMAKE_COMMAND} -E env
+              # Skip timing-threshold assertions during Valgrind runs. They are
+              # performance checks, not correctness checks, and Valgrind's
+              # instrumentation makes those thresholds meaningless.
+              SCOPETIMER_PERF_MODE=SKIP
+              ${VALGRIND_EXECUTABLE}
               # The test suite intentionally stress-tests threading with 1000
               # workers, which exceeds Valgrind's default 500-thread limit.
               --max-threads=2000
