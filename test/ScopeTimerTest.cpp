@@ -92,12 +92,14 @@ public:
         test_env_format_unset_and_empty();
         test_empty_label();
         test_seconds_format_branch();
+        test_boolean_setting_normalization_branches();
         test_thread_buffered_sink_flushes_on_size_threshold();
         test_thread_buffered_sink_defers_target_flush_until_disable();
         test_thread_buffered_sink_flushes_on_disable();
         test_thread_buffered_sink_flushes_on_thread_exit();
         test_async_sink_flushes_on_disable();
         test_async_sink_flush_calls_custom_sink();
+        test_async_sink_reconfiguration_keeps_worker_running();
         test_hot_path_timer_emits_compact_line();
         test_performance_overhead();
         test_fmt_auto_seconds_branch();
@@ -105,10 +107,14 @@ public:
         test_buffer_append_helpers_cover_edge_cases();
         test_format_elapsed_impl_covers_small_buffer_failures();
         test_fmt_nanos_handles_truncation_and_zero_buffer();
+        test_log_line_builders_handle_zero_buffers();
+        test_sink_write_helpers_ignore_empty_payloads();
+        test_conditional_timer_direct_true_branch();
         test_flush_active_sink_covers_all_sink_kinds();
         test_default_sink_write_batches_cover_error_and_chunking_paths();
         test_finalize_snprintf_result_branches();
         test_disabled_via_env_child_process();
+        test_hot_path_disabled_via_env_child_process();
         test_thread_buffered_sink_flushes_on_process_exit();
         test_async_sink_flushes_on_process_exit();
         test_walltime_disable_omits_timestamps();
@@ -798,6 +804,21 @@ private:
         ::setenv("SCOPE_TIMER_FORMAT", "MICROS", 1);
     }
 
+    static void test_boolean_setting_normalization_branches() {
+        std::string empty = ::xyzzy::scopetimer::ScopeTimer::normalizeBooleanSetting(" \t ");
+        expect(empty.empty(), "boolean setting normalization trims whitespace-only values");
+
+        ::setenv("SCOPETIMER_TEST_BOOL", " \t ", 1);
+        bool defaultFalse = ::xyzzy::scopetimer::ScopeTimer::isTruthySetting("SCOPETIMER_TEST_BOOL", false);
+        bool defaultTrue = ::xyzzy::scopetimer::ScopeTimer::isTruthySetting("SCOPETIMER_TEST_BOOL", true);
+        expect(!defaultFalse && defaultTrue, "blank boolean setting falls back to caller default");
+
+        ::setenv("SCOPETIMER_TEST_BOOL", "maybe", 1);
+        bool truthy = ::xyzzy::scopetimer::ScopeTimer::isTruthySetting("SCOPETIMER_TEST_BOOL", false);
+        expect(truthy, "unrecognized non-empty boolean setting is truthy");
+        ::unsetenv("SCOPETIMER_TEST_BOOL");
+    }
+
     static void test_thread_buffered_sink_flushes_on_size_threshold() {
         sinkCaptureBuffer().clear();
         sinkFlushCount() = 0U;
@@ -906,6 +927,30 @@ private:
         expect(sinkCaptureBuffer().find("tests:async:custom_flush") != std::string::npos,
                "async sink flush publishes pending custom-sink output");
         expect(sinkFlushCount() == 1U, "async sink flush calls the active custom sink flush");
+        SCOPE_TIMER_DISABLE_ASYNC_SINK();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+    }
+
+    static void test_async_sink_reconfiguration_keeps_worker_running() {
+        sinkCaptureBuffer().clear();
+        sinkFlushCount() = 0U;
+        SCOPE_TIMER_ENABLE_ASYNC_SINK(1U);
+        ::xyzzy::scopetimer::ScopeTimer::ensureAsyncSinkRunning();
+        ::xyzzy::scopetimer::ScopeTimer::ensureAsyncSinkRunning();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        {
+            SCOPE_TIMER("tests:async:reconfigured");
+            busyFor(1us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::asyncSinkFlush();
+        expect(sinkCaptureBuffer().find("tests:async:reconfigured") != std::string::npos,
+               "async sink remains running after custom sink reconfiguration");
+        ::xyzzy::scopetimer::ScopeTimer::publishBufferedSinkPayload(
+            nullptr,
+            0U,
+            ::xyzzy::scopetimer::ScopeTimer::BufferedSinkFlushMode::Forced
+        );
+        expect(true, "async buffered target accepts forced empty flush");
         SCOPE_TIMER_DISABLE_ASYNC_SINK();
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
     }
@@ -1123,12 +1168,28 @@ private:
         endOut = trunc + sizeof(trunc);
         ::xyzzy::scopetimer::ScopeTimer::appendCharTruncating(endOut, trunc + sizeof(trunc), 'q');
         expect(endOut == trunc + sizeof(trunc), "appendCharTruncating is a no-op at the end of the buffer");
+
+        char none[1] = {};
+        char* noneOut = none;
+        ::xyzzy::scopetimer::ScopeTimer::appendBytesTruncating(noneOut, none, "z", 1U);
+        expect(noneOut == none, "appendBytesTruncating ignores writes when no space remains");
+
+        char threadId[8] = {};
+        out = threadId;
+        ::xyzzy::scopetimer::ScopeTimer::appendThreadIdTruncating(out, threadId + sizeof(threadId), 1001U);
+        expect(std::string_view(threadId, 4U) == "1001",
+               "appendThreadIdTruncating formats thread ids above the fixed-width range");
     }
 
     static void test_format_elapsed_impl_covers_small_buffer_failures() {
         char zeroBuf[1] = {'x'};
         std::size_t len = ::xyzzy::scopetimer::ScopeTimer::formatElapsedImpl(1ULL, 2U, 'm', zeroBuf, 0U);
         expect(len == 0U, "formatElapsedImpl returns zero when the output buffer is empty");
+
+        char wholeBuf[1] = {'x'};
+        len = ::xyzzy::scopetimer::ScopeTimer::formatElapsedImpl(123ULL, 2U, 'm', wholeBuf, sizeof(wholeBuf));
+        expect(len == 0U && wholeBuf[0] == '\0',
+               "formatElapsedImpl clears the buffer when the whole value does not fit");
 
         char dotBuf[1] = {'x'};
         len = ::xyzzy::scopetimer::ScopeTimer::formatElapsedImpl(1ULL, 2U, 'm', dotBuf, sizeof(dotBuf));
@@ -1154,6 +1215,11 @@ private:
         len = ::xyzzy::scopetimer::ScopeTimer::formatElapsedImpl(1ULL, 2U, 'm', okBuf, sizeof(okBuf));
         expect(len == 7U && std::string_view(okBuf) == "1.002ms",
                "formatElapsedImpl succeeds when the whole value, fraction, and suffix fit");
+
+        char exactBuf[6] = {'x', 'x', 'x', 'x', 'x', 'x'};
+        len = ::xyzzy::scopetimer::ScopeTimer::formatElapsedImpl(1ULL, 2U, 's', exactBuf, sizeof(exactBuf));
+        expect(len == sizeof(exactBuf) && exactBuf[sizeof(exactBuf) - 1U] == '\0',
+               "formatElapsedImpl terminates exact-fit buffers at the last byte");
     }
 
     static void test_fmt_nanos_handles_truncation_and_zero_buffer() {
@@ -1170,6 +1236,46 @@ private:
         len = ::xyzzy::scopetimer::ScopeTimer::fmtNanos(42LL, okBuf, sizeof(okBuf));
         expect(len == 4U && std::string_view(okBuf) == "42ns",
                "fmtNanos appends the nanosecond suffix when the buffer is large enough");
+    }
+
+    static void test_log_line_builders_handle_zero_buffers() {
+        char ignored = 'x';
+        ::xyzzy::scopetimer::ScopeTimer::LogLineFields fields{
+            "label", 1001U, "where", "start", "end", "1us", true
+        };
+        std::size_t len = ::xyzzy::scopetimer::ScopeTimer::buildLogLine(&ignored, 0U, fields);
+        expect(len == 0U, "buildLogLine returns zero for empty output buffers");
+
+        len = ::xyzzy::scopetimer::ScopeTimer::buildHotPathLogLine(&ignored, 0U, "label", "1ns", 3U);
+        expect(len == 0U, "buildHotPathLogLine returns zero for empty output buffers");
+
+        char timeIgnored = 'x';
+        len = ::xyzzy::scopetimer::ScopeTimer::formatTime(std::chrono::system_clock::now(), &timeIgnored, 0U);
+        expect(len == 0U, "formatTime returns zero for empty output buffers");
+    }
+
+    static void test_sink_write_helpers_ignore_empty_payloads() {
+        ::xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite("", 0U);
+        ::xyzzy::scopetimer::ScopeTimer::asyncSinkWrite("", 0U);
+        expect(true, "sink write helpers ignore empty payloads");
+    }
+
+    static void test_conditional_timer_direct_true_branch() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        {
+            ::xyzzy::scopetimer::detail::ConditionalScopeTimer timer(
+                true,
+                "tests:conditional:direct",
+                []() noexcept {
+                    return ::xyzzy::scopetimer::detail::makeLabelData("tests:conditional:direct");
+                }
+            );
+            busyFor(1us);
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(sinkCaptureBuffer().find("tests:conditional:direct") != std::string::npos,
+               "direct ConditionalScopeTimer true branch constructs a timer");
     }
 
     static void test_flush_active_sink_covers_all_sink_kinds() {
@@ -1297,6 +1403,11 @@ private:
             busyFor(100us);
             return 0;
         }
+        if (mode == "hotpath_disabled") {
+            SCOPE_TIMER_HOT_PATH("tests:hot_path:disabled");
+            busyFor(100us);
+            return 0;
+        }
         return -1;
     }
 
@@ -1314,7 +1425,7 @@ private:
             if (kv.first == "SCOPETIMER_PROBE") {
                 probeSet = true;
             }
-            envBlock += kv.first + "=" + kv.second + " ";
+            envBlock += kv.first + "=" + shellEscape(kv.second) + " ";
         }
         if (!probeSet) {
             envBlock = std::string("SCOPETIMER_PROBE=1 ") + envBlock;
@@ -1330,6 +1441,30 @@ private:
         std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
         int rc = run_child_with_env({{"SCOPE_TIMER","0"},{"SCOPE_TIMER_FORMAT","MICROS"},{"SCOPE_TIMER_DIR",tmpdir}});
         expect(rc == 0, "disabled via env executed in child process");
+    }
+
+    static void test_hot_path_disabled_via_env_child_process() {
+        char templ[] = "/tmp/scopetimer_hotpath_disabledXXXXXX";
+        char* tdir = ::mkdtemp(templ);
+        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        const std::string logfile = tmpdir + "/ScopeTimer.log";
+        std::remove(logfile.c_str());
+
+        int rc = run_child_with_env({
+            {"SCOPETIMER_PROBE", "hotpath_disabled"},
+            {"SCOPE_TIMER", "0"},
+            {"SCOPE_TIMER_FORMAT", "MICROS"},
+            {"SCOPE_TIMER_DIR", tmpdir}
+        });
+        expect(rc == 0, "hot-path disabled via env executed in child process");
+
+        std::ifstream in(logfile, std::ios::binary);
+        expect(!in.good(), "hot-path disabled via env does not create a log file");
+
+        std::remove(logfile.c_str());
+        if (tdir) {
+            ::rmdir(tmpdir.c_str());
+        }
     }
 
     static void test_thread_buffered_sink_flushes_on_process_exit() {
@@ -1422,15 +1557,28 @@ private:
     }
 
     static void test_disabled_case_insensitivity_child_process() {
-        const char* variants[] = {"off", "Off", "FALSE", "False", "nO"};
+        const char* variants[] = {"off", "Off", "FALSE", "False", "nO", " off ", "\tFALSE\t"};
         for (const char* variant : variants) {
+            char templ[] = "/tmp/scopetimer_disabled_variantXXXXXX";
+            char* tdir = ::mkdtemp(templ);
+            std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+            const std::string logfile = tmpdir + "/ScopeTimer.log";
+            std::remove(logfile.c_str());
             std::vector<std::pair<std::string,std::string>> env = {
                 {"SCOPE_TIMER", variant},
-                {"SCOPE_TIMER_FORMAT", "MICROS"}
+                {"SCOPE_TIMER_FORMAT", "MICROS"},
+                {"SCOPE_TIMER_DIR", tmpdir}
             };
             int rc = run_child_with_env(env);
             const std::string msg = std::string("disabled env variant '") + variant + "' handled in child process";
             expect(rc == 0, msg.c_str());
+            std::ifstream in(logfile, std::ios::binary);
+            const std::string logMsg = std::string("disabled env variant '") + variant + "' suppresses logging";
+            expect(!in.good(), logMsg.c_str());
+            std::remove(logfile.c_str());
+            if (tdir) {
+                ::rmdir(tmpdir.c_str());
+            }
         }
     }
 

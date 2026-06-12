@@ -499,12 +499,12 @@ file(WRITE "${CMAKE_BINARY_DIR}/cmake/CleanGcda.cmake" "
 file(GLOB_RECURSE gcda \"${CMAKE_BINARY_DIR}/*.gcda\")
 if(gcda)
   message(STATUS \"Removing stale .gcda files to avoid stamp mismatch\")
-  file(REMOVE ${gcda})
+  file(REMOVE \${gcda})
 endif()
 file(GLOB_RECURSE gcov_json \"${CMAKE_BINARY_DIR}/*.gcov.json.gz\")
 if(gcov_json)
   message(STATUS \"Removing stale .gcov.json.gz files to avoid gcovr merge conflicts\")
-  file(REMOVE ${gcov_json})
+  file(REMOVE \${gcov_json})
 endif()
 ")
 
@@ -559,7 +559,7 @@ endif()
 # The scanner configuration now lives entirely in sonar-project.properties.
 # This target captures a clean build so the wrapper emits a fresh
 # compile_commands.json into ${CMAKE_BINARY_DIR}/bw-output/.
-option(ENABLE_SONAR "Enable Sonar build-wrapper target" ON)
+option(ENABLE_SONAR "Enable Sonar build-wrapper and scanner targets" OFF)
 set(SONAR_BW_OUT ${CMAKE_BINARY_DIR}/bw-output CACHE PATH "build-wrapper output directory")
 # Optional explicit override to the executable; if empty we auto-detect / auto-install.
 set(SONAR_BUILD_WRAPPER "" CACHE FILEPATH "Path to build-wrapper executable (optional; auto-detect if empty)")
@@ -693,6 +693,13 @@ if(ENABLE_SONAR)
       VERBATIM
     )
   endif()
+else()
+  add_custom_target(sonar_bw
+    COMMENT "ERROR: Sonar build-wrapper disabled — configure with -DENABLE_SONAR=ON"
+    COMMAND ${CMAKE_COMMAND} -E echo "[sonar_bw] ERROR: configure with -DENABLE_SONAR=ON to enable Sonar build-wrapper tooling."
+    COMMAND ${CMAKE_COMMAND} -E false
+    VERBATIM
+  )
 endif()
 
 # --- Sonar scanner ---------------------------------------------------------
@@ -784,24 +791,33 @@ if(TARGET sonar_bw)
   list(APPEND _scan_deps sonar_bw)
 endif()
 
-_detect_or_install_scanner(SONAR_SCANNER_EXECUTABLE)
-if(SONAR_SCANNER_EXECUTABLE)
-  add_custom_target(sonar_scan
-    COMMENT "Run sonar build-wrapper, generate coverage, then run sonar-scanner"
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target sonar_bw
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target coverage
-    COMMAND ${SONAR_SCANNER_EXECUTABLE}
-            --define sonar.projectBaseDir=${CMAKE_SOURCE_DIR}
-            --define sonar.cfamily.compile-commands=${SONAR_BW_OUT}/compile_commands.json
-            --define sonar.coverageReportPaths=${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    VERBATIM
-  )
+if(ENABLE_SONAR)
+  _detect_or_install_scanner(SONAR_SCANNER_EXECUTABLE)
+  if(SONAR_SCANNER_EXECUTABLE)
+    add_custom_target(sonar_scan
+      COMMENT "Run sonar build-wrapper, generate coverage, then run sonar-scanner"
+      COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target sonar_bw
+      COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target coverage
+      COMMAND ${SONAR_SCANNER_EXECUTABLE}
+              --define sonar.projectBaseDir=${CMAKE_SOURCE_DIR}
+              --define sonar.cfamily.compile-commands=${SONAR_BW_OUT}/compile_commands.json
+              --define sonar.coverageReportPaths=${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      VERBATIM
+    )
+  else()
+    message(STATUS "sonar-scanner not available (download failed). 'sonar_scan' will print a helpful error.")
+    add_custom_target(sonar_scan
+      COMMENT "ERROR: sonar-scanner missing — install it or set PATH"
+      COMMAND ${CMAKE_COMMAND} -E echo "[sonar_scan] ERROR: sonar-scanner not found."
+      COMMAND ${CMAKE_COMMAND} -E false
+      VERBATIM
+    )
+  endif()
 else()
-  message(STATUS "sonar-scanner not available (download failed). 'sonar_scan' will print a helpful error.")
   add_custom_target(sonar_scan
-    COMMENT "ERROR: sonar-scanner missing — install it or set PATH"
-    COMMAND ${CMAKE_COMMAND} -E echo "[sonar_scan] ERROR: sonar-scanner not found."
+    COMMENT "ERROR: Sonar scanner disabled — configure with -DENABLE_SONAR=ON"
+    COMMAND ${CMAKE_COMMAND} -E echo "[sonar_scan] ERROR: configure with -DENABLE_SONAR=ON to enable Sonar scanner tooling."
     COMMAND ${CMAKE_COMMAND} -E false
     VERBATIM
   )

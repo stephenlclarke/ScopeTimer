@@ -99,6 +99,7 @@
 #include <chrono>
 #include <charconv>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -107,6 +108,7 @@
 #include <deque>
 #include <fcntl.h>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -114,12 +116,14 @@
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <io.h>
+#else
 #include <sys/uio.h>
+#include <unistd.h>
 #endif
 #include <thread>
 #include <type_traits>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -180,10 +184,15 @@ namespace xyzzy::scopetimer {
         struct CustomSinkFlushStorageTag {};
         struct BufferedTestSinkWriteStorageTag {};
         struct AsyncSinkStateTag {};
+        struct LocaltimeMutexTag {};
     } // namespace detail
 
     inline std::mutex& outMutex() noexcept {
         return detail::singletonStorage<detail::OutMutexTag, std::mutex>();
+    }
+
+    inline std::mutex& localtimeMutex() noexcept {
+        return detail::singletonStorage<detail::LocaltimeMutexTag, std::mutex>();
     }
 
     inline std::atomic<unsigned>& lineCounter() noexcept {
@@ -572,11 +581,7 @@ namespace xyzzy::scopetimer {
                     return false;
                 }
 
-                std::string val(env);
-
-                for(auto& c : val) {
-                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                }
+                const std::string val = normalizeBooleanSetting(env);
 
                 return val == "OFF" || val == "FALSE" || val == "NO" || val == "0";
             }();
@@ -584,11 +589,29 @@ namespace xyzzy::scopetimer {
             return disabled;
         }
 
+        static inline std::string normalizeBooleanSetting(const char* env) {
+            std::string value(env ? env : "");
+            const auto isSpace = [](char c) {
+                return std::isspace(static_cast<unsigned char>(c)) != 0;
+            };
+            const auto first = std::find_if_not(value.begin(), value.end(), isSpace);
+            const auto last = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();
+            if (first >= last) {
+                return {};
+            }
+
+            std::string normalized(first, last);
+            std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            return normalized;
+        }
+
         static inline bool isTruthySetting(const char* envName, bool defaultValue) noexcept {
             if (const char* env = std::getenv(envName); env && *env) {
-                std::string value(env);
-                std::transform(value.begin(), value.end(), value.begin(),
-                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                const std::string value = normalizeBooleanSetting(env);
+                if (value.empty()) {
+                    return defaultValue;
+                }
                 if (value == "OFF" || value == "FALSE" || value == "NO" || value == "0") {
                     return false;
                 }
@@ -683,12 +706,20 @@ namespace xyzzy::scopetimer {
         enum class TimeFormat { Auto, Seconds, Millis, Micros, Nanos };
         using FormatterFn = std::size_t(*)(long long ns, char* out, size_t outSz) noexcept;
 
-        // Portable localtime shim
-#if defined(_WIN32)
-#  define LOCALTIME(tm_ptr, time_ptr) localtime_s((tm_ptr), (time_ptr))
+        static inline bool fillLocalTime(std::tm& tm, const std::time_t& tt) noexcept {
+#if defined(_WIN32) && defined(_MSC_VER)
+            return ::localtime_s(&tm, &tt) == 0;
+#elif defined(_WIN32)
+            std::lock_guard lock(localtimeMutex());
+            if (std::tm* local = std::localtime(&tt)) {
+                tm = *local;
+                return true;
+            }
+            return false;
 #else
-#  define LOCALTIME(tm_ptr, time_ptr) localtime_r((time_ptr), (tm_ptr))
+            return ::localtime_r(&tt, &tm) != nullptr;
 #endif
+        }
 
         static inline bool appendFixedDigits(char*& out, const char* end, unsigned value, unsigned width) noexcept {
             std::array<char, 10> tmp{};
@@ -950,7 +981,10 @@ namespace xyzzy::scopetimer {
 
             if (cache.second != tt) {
                 auto tm = std::tm{};
-                LOCALTIME(&tm, &tt);
+                if (!fillLocalTime(tm, tt)) {
+                    out[0] = '\0';
+                    return 0;
+                }
 
                 char* prefixOut = cache.prefix.data();
                 if (const char* prefixEnd = cache.prefix.data() + cache.prefix.size() - 1U;
@@ -1671,6 +1705,61 @@ namespace xyzzy::scopetimer {
         static inline std::string logDirCache_{"/tmp/"};
         static inline bool logDirInitialized_{false};
 
+        static inline int openLogFileForAppend(const std::string& path) noexcept {
+#if defined(_WIN32)
+            int openFlags = _O_CREAT | _O_WRONLY | _O_APPEND;
+#ifdef _O_BINARY
+            openFlags |= _O_BINARY;
+#endif
+#ifdef _O_NOINHERIT
+            openFlags |= _O_NOINHERIT;
+#endif
+            return ::_open(path.c_str(), openFlags, _S_IREAD | _S_IWRITE);
+#else
+            int openFlags = O_CREAT | O_WRONLY | O_APPEND;
+#ifdef O_CLOEXEC
+            openFlags |= O_CLOEXEC;
+#endif
+            const int fd = ::open(path.c_str(), openFlags, 0600);
+#ifndef O_CLOEXEC
+            if (fd >= 0) {
+                (void)::fcntl(fd, F_SETFD, FD_CLOEXEC);
+            }
+#endif
+            return fd;
+#endif
+        }
+
+        static inline void closeFd(int fd) noexcept {
+#if defined(_WIN32)
+            (void)::_close(fd);
+#else
+            (void)::close(fd);
+#endif
+        }
+
+        static inline void writeFdBestEffort(int fd, const char* data, std::size_t len) noexcept {
+#if defined(_WIN32)
+            const auto maxChunk = static_cast<std::size_t>(std::numeric_limits<unsigned int>::max());
+            const auto chunkLen = static_cast<unsigned int>(std::min(len, maxChunk));
+            const int unused = ::_write(fd, data, chunkLen);
+            (void)unused;
+#else
+            const ssize_t unused = ::write(fd, data, len);
+            (void)unused;
+#endif
+        }
+
+        static inline void flushFdBestEffort(int fd) noexcept {
+#if defined(_WIN32)
+            (void)::_commit(fd);
+#elif defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO >= 0 && !defined(__APPLE__)
+            (void)::fdatasync(fd);
+#else
+            (void)::fsync(fd);
+#endif
+        }
+
         /**
          * @brief Opens the default log file descriptor on first use (best-effort).
          */
@@ -1689,15 +1778,7 @@ namespace xyzzy::scopetimer {
                 return false;
             }
 
-            int openFlags = O_CREAT | O_WRONLY | O_APPEND;
-#ifdef O_CLOEXEC
-            openFlags |= O_CLOEXEC;
-#endif
-
-            if (int newFd = ::open(path.c_str(), openFlags, 0600); newFd >= 0) {
-#ifndef O_CLOEXEC
-                (void)::fcntl(newFd, F_SETFD, FD_CLOEXEC);
-#endif
+            if (int newFd = openLogFileForAppend(path); newFd >= 0) {
                 fd = newFd;
                 lastAttemptFailed = false;
                 lastFailedPath.clear();
@@ -1741,7 +1822,7 @@ namespace xyzzy::scopetimer {
         static inline void closeLogFd() noexcept {
             int& fd = logFd();
             if (fd >= 0) {
-                ::close(fd);
+                closeFd(fd);
                 fd = -1;
             }
         }
@@ -2006,20 +2087,15 @@ inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, st
         }
     }
 
-    // write(2) can legitimately return fewer bytes than requested. Since ScopeTimer logging is
-    // best-effort, we intentionally ignore the return code — we never want to throw or retry from here.
-    ssize_t unused = ::write(fd, data, len); 
-    (void)unused; // Explicitly mark the variable as "intentionally unused"
+    // File writes can legitimately write fewer bytes than requested. ScopeTimer logging is
+    // best-effort, so we intentionally ignore the return code from the platform helper.
+    writeFdBestEffort(fd, data, len);
 }
 
 inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {
     int fd = logFd();
     if (fd >= 0) {
-#if defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO >= 0 && !defined(__APPLE__)
-        ::fdatasync(fd);
-#else
-        ::fsync(fd);
-#endif
+        flushFdBestEffort(fd);
     }
 }
 

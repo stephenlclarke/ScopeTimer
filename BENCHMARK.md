@@ -20,25 +20,25 @@ this file with the latest snapshot.
 
 ## Current benchmark snapshot
 
-- Recorded at: `2026-04-17T20:10:04+00:00`
-- Commit: `62e513c`
-- Subject: ci(leaks): keep benchmarks local and fix Sonar warning
-- Branch: `main`
+- Recorded at: `2026-06-12T15:25:57+00:00`
+- Commit: `c2ef1ca`
+- Subject: test(scopetimer): improve coverage and pin sonar actions
+- Branch: `develop`
 - Dirty worktree: no
 - Config: `binary=/Users/sclarke/github/ScopeTimer/build-bench/Benchmark`, `build_dir=/Users/sclarke/github/ScopeTimer/build-bench`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, `sink_bytes=4096`, `cxx_flags=-O3`
-- Comparison baseline: last benchmark checked in to `main`: `2026-04-17T20:02:05+00:00` on `bb2f7e3`
+- Comparison baseline: last benchmark checked in to `main`: `2026-04-17T20:10:04+00:00` on `62e513c`
 - Delta source: per-record overhead when available, otherwise mean overhead.
 
 | Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| Standard timer, default sink | `1.271us` | `0.097595s` (591.069%) | `0.114106s` | `76807` | -0.051us (-3.8%) | faster |
-| Standard timer, wall time disabled | `1.194us` | `0.091725s` (572.535%) | `0.107752s` | `76807` | +0.039us (+3.4%) | slower |
-| Standard timer, null sink | `n/a` | `0.002282s` (14.393%) | `0.018155s` | `0` | -0.000110s (-4.6%) | faster |
-| Standard timer, buffered sink | `0.048us` | `0.003698s` (23.930%) | `0.019162s` | `76807` | +0.002us (+3.7%) | slower |
-| Standard timer, buffered sink (threaded stress) | `0.269us` | `0.082681s` (508.059%) | `0.098958s` | `307207` | +0.007us (+2.6%) | slower |
-| Standard timer, async sink | `0.020us` | `0.006283s` (38.864%) | `0.022463s` | `307207` | +0.002us (+13.2%) | slower |
-| Hot-path timer, async sink | `0.017us` | `0.005251s` (32.625%) | `0.021345s` | `307207` | +0.002us (+12.1%) | slower |
-| Hot-path timer, null sink | `n/a` | `0.001282s` (8.396%) | `0.016586s` | `0` | +0.000028s (+2.2%) | slower |
+| Standard timer, default sink | `1.672us` | `0.128459s` (435.106%) | `0.158093s` | `76807` | +0.402us (+31.6%) | slower |
+| Standard timer, wall time disabled | `1.489us` | `0.114355s` (391.310%) | `0.143587s` | `76807` | +0.295us (+24.7%) | slower |
+| Standard timer, null sink | `n/a` | `0.002388s` (8.512%) | `0.032261s` | `0` | +0.000105s (+4.6%) | slower |
+| Standard timer, buffered sink | `0.083us` | `0.006410s` (22.644%) | `0.035056s` | `76807` | +0.035us (+73.3%) | slower |
+| Standard timer, buffered sink (threaded stress) | `0.380us` | `0.116667s` (382.446%) | `0.147192s` | `307207` | +0.111us (+41.1%) | slower |
+| Standard timer, async sink | `0.064us` | `0.019537s` (63.475%) | `0.050508s` | `307207` | +0.043us (+211.0%) | slower |
+| Hot-path timer, async sink | `0.049us` | `0.015100s` (50.277%) | `0.045145s` | `307207` | +0.032us (+187.6%) | slower |
+| Hot-path timer, null sink | `n/a` | `0.003397s` (11.857%) | `0.032008s` | `0` | +0.002114s (+164.9%) | slower |
 
 Full historical results remain in
 `benchmarks/demo_benchmark_history.json`.
