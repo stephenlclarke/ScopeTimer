@@ -81,7 +81,7 @@ def run_once(
     )
     elapsed = time.perf_counter() - start
     if completed.returncode != 0:
-            raise RuntimeError(f"Benchmark exited with {completed.returncode} (enabled={enabled})")
+        raise RuntimeError(f"Benchmark exited with {completed.returncode} (enabled={enabled})")
 
     log_exists = log_path.exists()
     log_lines = 0

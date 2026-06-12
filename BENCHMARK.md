@@ -20,25 +20,51 @@ this file with the latest snapshot.
 
 ## Current benchmark snapshot
 
-- Recorded at: `2026-06-12T15:25:57+00:00`
-- Commit: `c2ef1ca`
-- Subject: test(scopetimer): improve coverage and pin sonar actions
+- Recorded at: `2026-06-12T16:26:56+00:00`
+- Commit: `cfa0899`
+- Subject: docs(benchmarks): refresh quality snapshot
 - Branch: `develop`
-- Dirty worktree: no
-- Config: `binary=/Users/sclarke/github/ScopeTimer/build-bench/Benchmark`, `build_dir=/Users/sclarke/github/ScopeTimer/build-bench`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, `sink_bytes=4096`, `cxx_flags=-O3`
-- Comparison baseline: last benchmark checked in to `main`: `2026-04-17T20:10:04+00:00` on `62e513c`
+- Dirty worktree: yes
+- Config: `binary=build-bench/Benchmark`, `build_dir=build-bench`, `scenario=hotpath-bench`, `iterations=5`, `runs=8`, `threads=4`, `sink_bytes=4096`, `cxx_flags=-O3`
+- Comparison baseline: last benchmark checked in to `main`: `2026-06-12T15:25:57+00:00` on `c2ef1ca`
 - Delta source: per-record overhead when available, otherwise mean overhead.
+
+## Benchmark host
+
+- System: `macOS-26.4.1-arm64-arm-64bit` (arm64), Python `3.12.13`.
+- CPU: `Apple M2 Pro`, physical cores `10`, logical cores `10`.
+- Memory: `16.00 GiB` (17179869184 bytes).
+- Disk: `926.35 GiB` total, `483.55 GiB` free, `442.80 GiB` used.
+- Disk details: filesystem=`/dev/disk3s3s1`, filesystem_type=`apfs`, device_node=`/dev/disk3s3s1`, mount_point=`/`, capacity=`48%`, solid_state=`True`, internal=`True`, smart_status=`Verified`, bus_protocol=`Apple Fabric`.
+
+## Current speed breakdown
+
+- Fastest measured configuration: Hot-path timer, async sink at `0.016us/record` (`16.455ns/record`).
+- Fastest configuration settings: `SCOPE_TIMER_BENCH_SINK=ASYNC`, `SCOPE_TIMER_BENCH_SINK_BYTES=65536`, `SCOPE_TIMER_BENCH_THREADS=4`, `SCOPE_TIMER_BENCH_TIMER=HOTPATH`, `SCOPE_TIMER_WALLTIME=0`.
+
+| Configuration | Per record | Nanoseconds per record | Mean overhead | Enabled mean | Key settings |
+| --- | --- | --- | --- | --- | --- |
+| Standard timer, default sink | `1.581us` | `1581.027ns` | `0.121434s` | `0.151389s` | default |
+| Standard timer, wall time disabled | `1.628us` | `1627.531ns` | `0.125006s` | `0.155477s` | `SCOPE_TIMER_WALLTIME=0` |
+| Standard timer, null sink | `n/a` | `n/a` | `0.003515s` | `0.034340s` | `SCOPE_TIMER_BENCH_SINK=NULL`, `SCOPE_TIMER_WALLTIME=0` |
+| Standard timer, buffered sink | `0.117us` | `117.178ns` | `0.009000s` | `0.038795s` | `SCOPE_TIMER_BENCH_SINK=BUFFERED`, `SCOPE_TIMER_WALLTIME=0` |
+| Standard timer, buffered sink (threaded stress) | `0.376us` | `376.094ns` | `0.115539s` | `0.146733s` | `SCOPE_TIMER_BENCH_SINK=BUFFERED`, `SCOPE_TIMER_BENCH_SINK_BYTES=4096`, `SCOPE_TIMER_BENCH_THREADS=4`, `SCOPE_TIMER_WALLTIME=0` |
+| Standard timer, async sink | `0.033us` | `33.145ns` | `0.010182s` | `0.040986s` | `SCOPE_TIMER_BENCH_SINK=ASYNC`, `SCOPE_TIMER_BENCH_SINK_BYTES=65536`, `SCOPE_TIMER_BENCH_THREADS=4`, `SCOPE_TIMER_WALLTIME=0` |
+| Hot-path timer, async sink | `0.016us` | `16.455ns` | `0.005055s` | `0.036285s` | `SCOPE_TIMER_BENCH_SINK=ASYNC`, `SCOPE_TIMER_BENCH_SINK_BYTES=65536`, `SCOPE_TIMER_BENCH_THREADS=4`, `SCOPE_TIMER_BENCH_TIMER=HOTPATH`, `SCOPE_TIMER_WALLTIME=0` |
+| Hot-path timer, null sink | `n/a` | `n/a` | `0.002261s` | `0.032231s` | `SCOPE_TIMER_BENCH_SINK=NULL`, `SCOPE_TIMER_BENCH_TIMER=HOTPATH`, `SCOPE_TIMER_WALLTIME=0` |
+
+## Profile results
 
 | Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| Standard timer, default sink | `1.672us` | `0.128459s` (435.106%) | `0.158093s` | `76807` | +0.402us (+31.6%) | slower |
-| Standard timer, wall time disabled | `1.489us` | `0.114355s` (391.310%) | `0.143587s` | `76807` | +0.295us (+24.7%) | slower |
-| Standard timer, null sink | `n/a` | `0.002388s` (8.512%) | `0.032261s` | `0` | +0.000105s (+4.6%) | slower |
-| Standard timer, buffered sink | `0.083us` | `0.006410s` (22.644%) | `0.035056s` | `76807` | +0.035us (+73.3%) | slower |
-| Standard timer, buffered sink (threaded stress) | `0.380us` | `0.116667s` (382.446%) | `0.147192s` | `307207` | +0.111us (+41.1%) | slower |
-| Standard timer, async sink | `0.064us` | `0.019537s` (63.475%) | `0.050508s` | `307207` | +0.043us (+211.0%) | slower |
-| Hot-path timer, async sink | `0.049us` | `0.015100s` (50.277%) | `0.045145s` | `307207` | +0.032us (+187.6%) | slower |
-| Hot-path timer, null sink | `n/a` | `0.003397s` (11.857%) | `0.032008s` | `0` | +0.002114s (+164.9%) | slower |
+| Standard timer, default sink | `1.581us` | `0.121434s` (405.460%) | `0.151389s` | `76807` | -0.091us (-5.5%) | faster |
+| Standard timer, wall time disabled | `1.628us` | `0.125006s` (410.093%) | `0.155477s` | `76807` | +0.139us (+9.3%) | slower |
+| Standard timer, null sink | `n/a` | `0.003515s` (11.574%) | `0.034340s` | `0` | +0.001127s (+47.2%) | slower |
+| Standard timer, buffered sink | `0.117us` | `0.009000s` (30.283%) | `0.038795s` | `76807` | +0.034us (+40.4%) | slower |
+| Standard timer, buffered sink (threaded stress) | `0.376us` | `0.115539s` (370.758%) | `0.146733s` | `307207` | -0.004us (-1.0%) | unchanged |
+| Standard timer, async sink | `0.033us` | `0.010182s` (33.077%) | `0.040986s` | `307207` | -0.030us (-47.9%) | faster |
+| Hot-path timer, async sink | `0.016us` | `0.005055s` (16.542%) | `0.036285s` | `307207` | -0.033us (-66.5%) | faster |
+| Hot-path timer, null sink | `n/a` | `0.002261s` (7.578%) | `0.032231s` | `0` | -0.001136s (-33.4%) | faster |
 
 Full historical results remain in
 `benchmarks/demo_benchmark_history.json`.

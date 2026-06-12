@@ -36,8 +36,8 @@
  *    ensuring no performance impact or binary bloat.
  * 3. **Thread Safety**: Logging is protected by a mutex to ensure non-interleaved log entries
  *    while keeping timing logic lock-free.
- * 4. **Buffered High-Throughput Logging**: Uses a large user buffer with periodic flushes to
- *    reduce I/O overhead while preserving timely log visibility.
+ * 4. **Buffered High-Throughput Logging**: Uses a large user buffer with batched handoffs to
+ *    reduce caller-thread I/O overhead while preserving timely log visibility.
  * 5. **Runtime Configurability**: Environment variables allow enabling/disabling timing,
  *    specifying the log directory, and controlling flush frequency without recompilation.
  *
@@ -53,8 +53,8 @@
  *     Defaults to `/tmp` if unset.
  *
  * - SCOPE_TIMER_FLUSH_N:
- *     Specifies the number of log lines between flushes to the log file.
- *     Must be a positive integer; defaults to 256 if unset or invalid.
+ *     Specifies the number of log lines between active sink flush hook calls.
+ *     Must be a positive integer; defaults to 4096 if unset or invalid.
  *
  * - SCOPE_TIMER_FORMAT:
  *     Controls the units used for displaying elapsed time. Accepted values:
@@ -182,6 +182,7 @@ namespace xyzzy::scopetimer {
         struct AsyncSinkTargetModeStorageTag {};
         struct CustomSinkWriteStorageTag {};
         struct CustomSinkFlushStorageTag {};
+        struct CustomLogSinkStorageTag {};
         struct BufferedTestSinkWriteStorageTag {};
         struct AsyncSinkStateTag {};
         struct LocaltimeMutexTag {};
@@ -489,13 +490,13 @@ namespace xyzzy::scopetimer {
                 }
             }
 
-            // Periodic flush to keep logs visible even with large buffers
-            unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1;
-
-            // Thread-buffered sink flushes on size; avoid periodic flush to keep the hot path cheap.
-            const bool flushViaInterval = activeSink != ActiveSink::ThreadBuffered;
-            if (flushViaInterval && (cnt % flushInterval() == 0)) { // configurable via SCOPE_TIMER_FLUSH_N
-                flushActiveSink(activeSink);
+            // Thread-buffered sink flushes on size; avoid periodic counters and
+            // interval checks to keep the buffered hot path cheap.
+            if (activeSink != ActiveSink::ThreadBuffered) {
+                const unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1U;
+                if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
+                    flushActiveSink(activeSink);
+                }
             }
         }
 
@@ -547,19 +548,11 @@ namespace xyzzy::scopetimer {
         }
 
         static inline void setLogSink(LogSink& sink) {
-            auto* sinkPtr = &sink;
-            setCustomSinkCallbacks(
-                [sinkPtr](const char* data, std::size_t len) {
-                    sinkPtr->write(data, len);
-                },
-                [sinkPtr]() {
-                    sinkPtr->flush();
-                }
-            );
+            setCustomLogSink(&sink);
         }
 
         static inline void resetLogSink() {
-            setCustomSinkCallbacks();
+            setCustomLogSink(nullptr);
         }
 
     private:
@@ -722,19 +715,31 @@ namespace xyzzy::scopetimer {
         }
 
         static inline bool appendFixedDigits(char*& out, const char* end, unsigned value, unsigned width) noexcept {
-            std::array<char, 10> tmp{};
-            if (width > tmp.size() || static_cast<std::size_t>(end - out) < width) {
+            constexpr unsigned MaxFixedDigitWidth = 10U;
+            if (width > MaxFixedDigitWidth || static_cast<std::size_t>(end - out) < width) {
                 return false;
             }
-            for (unsigned i = 0; i < width; ++i) {
-                const unsigned place = width - 1U - i;
-                unsigned divisor = 1U;
-                for (unsigned j = 0; j < place; ++j) {
-                    divisor *= 10U;
-                }
-                tmp[i] = static_cast<char>('0' + ((value / divisor) % 10U));
+
+            if (width == 2U) {
+                out[0] = static_cast<char>('0' + ((value / 10U) % 10U));
+                out[1] = static_cast<char>('0' + (value % 10U));
+                out += 2U;
+                return true;
             }
-            std::memcpy(out, tmp.data(), width);
+
+            if (width == 4U) {
+                out[0] = static_cast<char>('0' + ((value / 1000U) % 10U));
+                out[1] = static_cast<char>('0' + ((value / 100U) % 10U));
+                out[2] = static_cast<char>('0' + ((value / 10U) % 10U));
+                out[3] = static_cast<char>('0' + (value % 10U));
+                out += 4U;
+                return true;
+            }
+
+            for (unsigned i = width; i > 0U; --i) {
+                out[i - 1U] = static_cast<char>('0' + (value % 10U));
+                value /= 10U;
+            }
             out += width;
             return true;
         }
@@ -1363,18 +1368,29 @@ namespace xyzzy::scopetimer {
         static inline std::function<void()>& customSinkFlushStorage() {
             return detail::singletonStorage<detail::CustomSinkFlushStorageTag, std::function<void()>>();
         }
+        static inline LogSink*& customLogSinkStorage() noexcept {
+            return detail::singletonStorage<detail::CustomLogSinkStorageTag, LogSink*>(nullptr);
+        }
         static inline std::function<void(const char*, std::size_t)>& bufferedTestSinkWriteStorage() {
             return detail::singletonStorage<detail::BufferedTestSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
         }
         static inline bool hasCustomSink() {
-            return static_cast<bool>(customSinkWriteStorage());
+            return customLogSinkStorage() != nullptr || static_cast<bool>(customSinkWriteStorage());
         }
         static inline void writeToCustomSink(const char* data, std::size_t len) noexcept {
+            if (auto* sink = customLogSinkStorage()) {
+                sink->write(data, len);
+                return;
+            }
             if (const auto& writeFn = customSinkWriteStorage(); writeFn) {
                 writeFn(data, len);
             }
         }
         static inline void flushCustomSink() noexcept {
+            if (auto* sink = customLogSinkStorage()) {
+                sink->flush();
+                return;
+            }
             if (const auto& flushFn = customSinkFlushStorage(); flushFn) {
                 flushFn();
             }
@@ -1630,9 +1646,29 @@ namespace xyzzy::scopetimer {
             const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
                 && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
 
+            customLogSinkStorage() = nullptr;
             customSinkWriteStorage() = std::move(writeFn);
             customSinkFlushStorage() = flushFn ? std::move(flushFn) : std::function<void()>{};
+            updateCustomSinkRouting(asyncModeActive);
+        }
 
+        static inline void setCustomLogSink(LogSink* sink) {
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            closeLogFd();
+
+            const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
+                && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
+
+            customLogSinkStorage() = sink;
+            customSinkWriteStorage() = {};
+            customSinkFlushStorage() = {};
+            updateCustomSinkRouting(asyncModeActive);
+        }
+
+        static inline void updateCustomSinkRouting(bool asyncModeActive) {
             if (hasCustomSink()) {
                 if (activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::Default) {
                     activeSinkStorage().store(ActiveSink::Custom, std::memory_order_release);
@@ -1747,16 +1783,6 @@ namespace xyzzy::scopetimer {
 #else
             const ssize_t unused = ::write(fd, data, len);
             (void)unused;
-#endif
-        }
-
-        static inline void flushFdBestEffort(int fd) noexcept {
-#if defined(_WIN32)
-            (void)::_commit(fd);
-#elif defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO >= 0 && !defined(__APPLE__)
-            (void)::fdatasync(fd);
-#else
-            (void)::fsync(fd);
 #endif
         }
 
@@ -2093,10 +2119,9 @@ inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, st
 }
 
 inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {
-    int fd = logFd();
-    if (fd >= 0) {
-        flushFdBestEffort(fd);
-    }
+    // Default sink writes use unbuffered file descriptors, so periodic flush
+    // has no userspace buffer to drain. Avoid forcing disk durability on the
+    // timer hot path.
 }
 
 #ifdef __clang__

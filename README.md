@@ -66,9 +66,8 @@ Rewritten from scratch for C++17/20.
   manual assembly rather than repeated environment parsing or `snprintf`.
 - **Predictable output**: timestamped start/end + elapsed, suitable for
   grepping or ingestion.
-- **Safe by default**: thread-safe direct file appends with periodic flush, plus
-  optional buffered and async sink modes when you need lower caller-thread
-  overhead.
+- **Safe by default**: thread-safe direct file appends, plus optional buffered
+  and async sink modes when you need lower caller-thread overhead.
 - **Portable**: uses `localtime_s` (Windows) or `localtime_r` (POSIX).
 - **Release-friendly**: expands to no-ops under `NDEBUG` so you can leave calls
   in code.
@@ -77,8 +76,8 @@ Rewritten from scratch for C++17/20.
 
 - **RAII timing**: starts on construction, logs on destruction.
 - **Unique per-use macro**: safe to place multiple timers in the same scope.
-- **Thread-safe logging** with periodic flush plus optional thread-buffered and
-  async sink modes.
+- **Thread-safe logging** with periodic sink flush hooks plus optional
+  thread-buffered and async sink modes.
 - **One-time-selected formatter** (functor) for elapsed units via
   `SCOPE_TIMER_FORMAT`. No per-call branching.
 - **Pluggable log sink** via a small public `ScopeTimer::LogSink` interface.
@@ -129,7 +128,9 @@ the macro arguments are expanded **before** token pasting.
   (`NDEBUG` defined) this variable has no effect because `SCOPE_TIMER` calls
   compile to no-ops.
 - `SCOPE_TIMER_DIR` - Directory for `ScopeTimer.log` (default `/tmp`).
-- `SCOPE_TIMER_FLUSH_N` - Flush every N lines (default 4096, max 1,000,000).
+- `SCOPE_TIMER_FLUSH_N` - Invoke the active sink flush hook every N lines
+  (default 4096, max 1,000,000). The default file sink uses unbuffered appends,
+  so this does not force disk durability.
 - `SCOPE_TIMER_FORMAT` - Elapsed units: `SECONDS`, `MILLIS`, `MICROS`, or
   `NANOS` (case-insensitive). If unset/invalid, auto-selects a readable unit.
 - `SCOPE_TIMER_WALLTIME` - Set to `"OFF"`, `"FALSE"`, `"NO"`, or `"0"` to omit
