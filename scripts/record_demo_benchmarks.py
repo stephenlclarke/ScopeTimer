@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
+import plistlib
 import shlex
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,6 +193,167 @@ def run_git(args: list[str], repo_root: Path) -> str:
     if completed.returncode != 0:
         return ""
     return completed.stdout.strip()
+
+
+def run_command(args: list[str]) -> str:
+    completed = subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def int_or_none(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
+def human_bytes(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    amount = float(value)
+    unit = units[0]
+    for unit in units:
+        if abs(amount) < 1024.0 or unit == units[-1]:
+            break
+        amount /= 1024.0
+    if unit == "B":
+        return f"{int(amount)} {unit}"
+    return f"{amount:.2f} {unit}"
+
+
+def sysctl_value(name: str) -> str | None:
+    value = run_command(["sysctl", "-n", name])
+    return value if value else None
+
+
+def total_memory_bytes() -> int | None:
+    memsize = int_or_none(sysctl_value("hw.memsize"))
+    if memsize is not None:
+        return memsize
+
+    if hasattr(os, "sysconf"):
+        try:
+            pages = os.sysconf("SC_PHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError):
+            return None
+        if isinstance(pages, int) and isinstance(page_size, int):
+            return pages * page_size
+    return None
+
+
+def diskutil_metadata(mount_point: str | None) -> dict[str, Any]:
+    if platform.system() != "Darwin" or not mount_point:
+        return {}
+
+    completed = subprocess.run(
+        ["diskutil", "info", "-plist", mount_point],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0 or not completed.stdout:
+        return {}
+
+    try:
+        raw = plistlib.loads(completed.stdout)
+    except (plistlib.InvalidFileException, ValueError):
+        return {}
+
+    selected_keys = {
+        "APFSContainerReference": "apfs_container",
+        "BusProtocol": "bus_protocol",
+        "DeviceIdentifier": "device_identifier",
+        "DeviceNode": "device_node",
+        "FilesystemName": "filesystem_name",
+        "FilesystemType": "filesystem_type",
+        "Internal": "internal",
+        "MediaName": "media_name",
+        "MediaType": "media_type",
+        "MountPoint": "mount_point",
+        "SMARTStatus": "smart_status",
+        "SolidState": "solid_state",
+        "VolumeName": "volume_name",
+    }
+    return {
+        target_key: raw[source_key]
+        for source_key, target_key in selected_keys.items()
+        if source_key in raw
+    }
+
+
+def filesystem_metadata(path: Path) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"path": str(path)}
+    usage = shutil.disk_usage(path)
+    metadata.update(
+        {
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "total": human_bytes(usage.total),
+            "used": human_bytes(usage.used),
+            "free": human_bytes(usage.free),
+        }
+    )
+
+    df_output = run_command(["df", "-kP", str(path)])
+    lines = df_output.splitlines()
+    if len(lines) >= 2:
+        parts = lines[1].split(maxsplit=5)
+        if len(parts) >= 6:
+            metadata.update(
+                {
+                    "filesystem": parts[0],
+                    "blocks_1024": int_or_none(parts[1]),
+                    "used_1024": int_or_none(parts[2]),
+                    "available_1024": int_or_none(parts[3]),
+                    "capacity": parts[4],
+                    "mount_point": parts[5],
+                }
+            )
+
+    metadata.update(diskutil_metadata(metadata.get("mount_point")))
+    return metadata
+
+
+def machine_metadata(repo_root: Path) -> dict[str, Any]:
+    physical_cores = int_or_none(sysctl_value("hw.physicalcpu"))
+    logical_cores = int_or_none(sysctl_value("hw.logicalcpu")) or os.cpu_count()
+    memory_bytes = total_memory_bytes()
+    cpu_brand = sysctl_value("machdep.cpu.brand_string") or platform.processor() or "unknown"
+
+    return {
+        "system": {
+            "platform": platform.platform(),
+            "system": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "cpu": {
+            "brand": cpu_brand,
+            "physical_cores": physical_cores,
+            "logical_cores": logical_cores,
+            "architecture": platform.machine(),
+        },
+        "memory": {
+            "total_bytes": memory_bytes,
+            "total": human_bytes(memory_bytes),
+        },
+        "disk": filesystem_metadata(repo_root),
+    }
 
 
 def git_metadata(repo_root: Path) -> dict[str, Any]:
@@ -426,6 +591,18 @@ def format_us(value: float | None) -> str:
     return f"{value:.3f}us"
 
 
+def format_ns_from_us(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 1000.0:.3f}ns"
+
+
+def format_env_summary(env: dict[str, str] | None) -> str:
+    if not env:
+        return "default"
+    return ", ".join(f"`{key}={value}`" for key, value in sorted(env.items()))
+
+
 def format_yes_no(value: bool) -> str:
     return "yes" if value else "no"
 
@@ -454,6 +631,124 @@ def comparison_delta_text(comparison: dict[str, Any]) -> str:
         f"{format_metric_value(metric_name, delta_value, signed=True)} "
         f"({delta_pct:+.1f}%)"
     )
+
+
+def speed_profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
+    per_record_us = profile.get("approx_per_record_us")
+    per_record_ns = None
+    if per_record_us is not None:
+        per_record_ns = float(per_record_us) * 1000.0
+
+    return {
+        "name": profile.get("name"),
+        "label": profile.get("label", profile.get("name", "unknown")),
+        "env": profile.get("env", {}),
+        "approx_per_record_us": per_record_us,
+        "approx_per_record_ns": per_record_ns,
+        "delta_mean_s": profile.get("delta_mean_s"),
+        "enabled_mean_s": profile.get("enabled_mean_s"),
+        "enabled_log_lines": profile.get("enabled_log_lines", 0),
+    }
+
+
+def build_speed_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    profile_summaries = [speed_profile_summary(profile) for profile in results]
+    per_record_profiles = [
+        profile for profile in profile_summaries
+        if profile.get("approx_per_record_us") is not None
+    ]
+    fastest = None
+    if per_record_profiles:
+        fastest = min(per_record_profiles, key=lambda profile: float(profile["approx_per_record_us"]))
+
+    return {
+        "fastest_profile": fastest,
+        "profiles": profile_summaries,
+    }
+
+
+def render_speed_breakdown_lines(summary: dict[str, Any]) -> list[str]:
+    fastest = summary.get("fastest_profile")
+    lines = ["", "## Current speed breakdown", ""]
+    if fastest:
+        per_record_us = fastest.get("approx_per_record_us")
+        lines.extend(
+            [
+                (
+                    "- Fastest measured configuration: "
+                    f"{fastest.get('label', 'unknown')} at "
+                    f"`{format_us(per_record_us)}/record` "
+                    f"(`{format_ns_from_us(per_record_us)}/record`)."
+                ),
+                f"- Fastest configuration settings: {format_env_summary(fastest.get('env', {}))}.",
+                "",
+            ]
+        )
+    else:
+        lines.extend(["- Fastest measured configuration: unavailable.", ""])
+
+    lines.extend(
+        [
+            "| Configuration | Per record | Nanoseconds per record | Mean overhead | Enabled mean | Key settings |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for profile in summary.get("profiles", []):
+        per_record_us = profile.get("approx_per_record_us")
+        lines.append(
+            "| "
+            f"{profile.get('label', 'unknown')} | "
+            f"`{format_us(per_record_us)}` | "
+            f"`{format_ns_from_us(per_record_us)}` | "
+            f"`{format_seconds(profile.get('delta_mean_s'))}` | "
+            f"`{format_seconds(profile.get('enabled_mean_s'))}` | "
+            f"{format_env_summary(profile.get('env', {}))} |"
+        )
+    return lines
+
+
+def render_machine_lines(machine: dict[str, Any]) -> list[str]:
+    system = machine.get("system", {})
+    cpu = machine.get("cpu", {})
+    memory = machine.get("memory", {})
+    disk = machine.get("disk", {})
+
+    disk_detail_parts = []
+    for key in ("filesystem", "filesystem_type", "device_node", "mount_point", "capacity"):
+        if disk.get(key) not in (None, ""):
+            disk_detail_parts.append(f"{key}=`{disk[key]}`")
+    for key in ("solid_state", "internal", "smart_status", "bus_protocol"):
+        if disk.get(key) not in (None, ""):
+            disk_detail_parts.append(f"{key}=`{disk[key]}`")
+
+    return [
+        "",
+        "## Benchmark host",
+        "",
+        (
+            "- System: "
+            f"`{system.get('platform', 'unknown')}` "
+            f"({system.get('machine', 'unknown')}), Python `{system.get('python', 'unknown')}`."
+        ),
+        (
+            "- CPU: "
+            f"`{cpu.get('brand', 'unknown')}`, "
+            f"physical cores `{cpu.get('physical_cores', 'unknown')}`, "
+            f"logical cores `{cpu.get('logical_cores', 'unknown')}`."
+        ),
+        (
+            "- Memory: "
+            f"`{memory.get('total', 'n/a')}` "
+            f"({memory.get('total_bytes', 'n/a')} bytes)."
+        ),
+        (
+            "- Disk: "
+            f"`{disk.get('total', 'n/a')}` total, "
+            f"`{disk.get('free', 'n/a')}` free, "
+            f"`{disk.get('used', 'n/a')}` used."
+        ),
+        f"- Disk details: {', '.join(disk_detail_parts) if disk_detail_parts else 'n/a'}.",
+    ]
 
 
 def render_report(
@@ -555,8 +850,18 @@ def render_report(
     else:
         lines.append("- Comparison baseline: no benchmark recorded on `main` yet.")
 
+    machine = latest.get("machine")
+    if machine:
+        lines.extend(render_machine_lines(machine))
+
+    speed_summary = latest.get("speed_summary") or build_speed_summary(latest.get("results", []))
+    if speed_summary:
+        lines.extend(render_speed_breakdown_lines(speed_summary))
+
     lines.extend(
         [
+            "",
+            "## Profile results",
             "",
             "| Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |",
             "| --- | --- | --- | --- | --- | --- | --- |",
@@ -735,6 +1040,7 @@ def main() -> None:
         "recorded_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "git": current_git,
         "comparison_reference": comparison_reference_metadata(baseline_entry, baseline_ref),
+        "machine": machine_metadata(repo_root),
         "benchmark_config": {
             "binary": str(binary),
             "build_dir": args.build_dir,
@@ -745,6 +1051,7 @@ def main() -> None:
             "sink_bytes": max(1, args.sink_bytes),
             "cxx_flags": args.cxx_flags,
         },
+        "speed_summary": build_speed_summary(results),
         "results": results,
     }
     history["history"].append(entry)

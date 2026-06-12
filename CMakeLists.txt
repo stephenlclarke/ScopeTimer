@@ -114,6 +114,19 @@ endif()
 include(CTest)
 enable_testing()
 
+function(scopetimer_set_test_working_directory)
+  set_tests_properties(${ARGN} PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+endfunction()
+
+function(scopetimer_set_benchmark_test_env TEST_NAME TEST_ENV)
+  set_tests_properties(
+    ${TEST_NAME}
+    PROPERTIES
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+      ENVIRONMENT "${TEST_ENV}"
+  )
+endfunction()
+
 if(TARGET Demo)
   add_test(NAME run_demo COMMAND Demo)
   add_test(NAME run_demo_iterations COMMAND Demo --iterations=1)
@@ -121,15 +134,13 @@ if(TARGET Demo)
   add_test(NAME run_demo_positional_iterations COMMAND Demo 2)
   add_test(NAME run_demo_positional_zero COMMAND Demo 0)
   add_test(NAME run_demo_help COMMAND Demo --help)
-  set_tests_properties(
+  scopetimer_set_test_working_directory(
     run_demo
     run_demo_iterations
     run_demo_iterations_zero_flag
     run_demo_positional_iterations
     run_demo_positional_zero
     run_demo_help
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
   )
 endif()
 
@@ -147,7 +158,7 @@ if(TARGET Benchmark)
   add_test(NAME run_benchmark_noop_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_async_invalid_env COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_out_of_range_env COMMAND Benchmark --iterations=1)
-  set_tests_properties(
+  scopetimer_set_test_working_directory(
     run_benchmark_default
     run_benchmark_iterations_zero
     run_benchmark_positional_zero
@@ -161,57 +172,39 @@ if(TARGET Benchmark)
     run_benchmark_noop_alias
     run_benchmark_async_invalid_env
     run_benchmark_out_of_range_env
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
   )
   set_tests_properties(run_benchmark_invalid_scenario PROPERTIES WILL_FAIL TRUE)
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_buffered_hotpath
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=BUFFERED;SCOPE_TIMER_BENCH_TIMER=HOTPATH;SCOPE_TIMER_BENCH_THREADS=2"
+    "SCOPE_TIMER_BENCH_SINK=BUFFERED;SCOPE_TIMER_BENCH_TIMER=HOTPATH;SCOPE_TIMER_BENCH_THREADS=2"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_buffered_fast_alias
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=buffered;SCOPE_TIMER_BENCH_TIMER=fast;SCOPE_TIMER_BENCH_THREADS=0;SCOPE_TIMER_BENCH_SINK_BYTES=0"
+    "SCOPE_TIMER_BENCH_SINK=buffered;SCOPE_TIMER_BENCH_TIMER=fast;SCOPE_TIMER_BENCH_THREADS=0;SCOPE_TIMER_BENCH_SINK_BYTES=0"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_async
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=ASYNC"
+    "SCOPE_TIMER_BENCH_SINK=ASYNC"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_null
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=NULL;SCOPE_TIMER_BENCH_TIMER=HOTPATH"
+    "SCOPE_TIMER_BENCH_SINK=NULL;SCOPE_TIMER_BENCH_TIMER=HOTPATH"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_async_invalid_env
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=async;SCOPE_TIMER_BENCH_THREADS=bogus;SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
+    "SCOPE_TIMER_BENCH_SINK=async;SCOPE_TIMER_BENCH_THREADS=bogus;SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_null_standard_alias
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=null"
+    "SCOPE_TIMER_BENCH_SINK=null"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_noop_alias
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=noop"
+    "SCOPE_TIMER_BENCH_SINK=noop"
   )
-  set_tests_properties(
+  scopetimer_set_benchmark_test_env(
     run_benchmark_out_of_range_env
-    PROPERTIES
-      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-      ENVIRONMENT "SCOPE_TIMER_BENCH_THREADS=9999999999999999999999999999;SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
+    "SCOPE_TIMER_BENCH_THREADS=9999999999999999999999999999;SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
   )
 endif()
 
@@ -326,6 +319,22 @@ option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md and TESTS.md during the
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 if(Python3_Interpreter_FOUND)
+  function(scopetimer_add_docs_refresh_target)
+    set(target_options)
+    if(AUTO_REFRESH_DOCS)
+      list(APPEND target_options ALL)
+    endif()
+    add_custom_target(docs_refresh ${target_options}
+      COMMENT "Regenerate BUILD.md and TESTS.md from live build artifacts"
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
+              --docs-build-dir ${DOCS_BUILD_DIR}
+              --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
+              --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
+      VERBATIM
+    )
+  endfunction()
+
   add_custom_target(scopetimer_header_coverage
     COMMENT "Measure ScopeTimer.hpp with clang source-based coverage and enforce the configured threshold"
     COMMAND ${Python3_EXECUTABLE}
@@ -380,62 +389,43 @@ if(Python3_Interpreter_FOUND)
     VERBATIM
   )
 
-  if(AUTO_REFRESH_DOCS)
-    add_custom_target(docs_refresh ALL
-      COMMENT "Regenerate BUILD.md and TESTS.md from live build artifacts"
-      COMMAND ${Python3_EXECUTABLE}
-              ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
-              --docs-build-dir ${DOCS_BUILD_DIR}
-              --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
-              --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
-      VERBATIM
-    )
-  else()
-    add_custom_target(docs_refresh
-      COMMENT "Regenerate BUILD.md and TESTS.md from live build artifacts"
-      COMMAND ${Python3_EXECUTABLE}
-              ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
-              --docs-build-dir ${DOCS_BUILD_DIR}
-              --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
-              --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
-      VERBATIM
-    )
-  endif()
+  scopetimer_add_docs_refresh_target()
 else()
-  add_custom_target(scopetimer_header_coverage
-    COMMENT "ERROR: Python 3 is required for the ScopeTimer.hpp header coverage helper"
-    COMMAND ${CMAKE_COMMAND} -E echo "[scopetimer_header_coverage] ERROR: Python 3 interpreter not found."
-    COMMAND ${CMAKE_COMMAND} -E false
-    VERBATIM
-  )
-
-  add_custom_target(demo_benchmark
-    COMMENT "ERROR: Python 3 is required for the benchmark helper"
-    COMMAND ${CMAKE_COMMAND} -E echo "[demo_benchmark] ERROR: Python 3 interpreter not found."
-    COMMAND ${CMAKE_COMMAND} -E false
-    VERBATIM
-  )
-
-  add_custom_target(demo_benchmark_matrix
-    COMMENT "ERROR: Python 3 is required for the benchmark matrix helper"
-    COMMAND ${CMAKE_COMMAND} -E echo "[demo_benchmark_matrix] ERROR: Python 3 interpreter not found."
-    COMMAND ${CMAKE_COMMAND} -E false
-    VERBATIM
-  )
-
-  if(AUTO_REFRESH_DOCS)
-    add_custom_target(docs_refresh ALL
-      COMMENT "ERROR: Python 3 is required for automatic markdown refresh"
-      COMMAND ${CMAKE_COMMAND} -E echo "[docs_refresh] ERROR: Python 3 interpreter not found."
+  function(scopetimer_add_missing_python_target TARGET_NAME ERROR_DETAIL)
+    set(target_options)
+    if(ARGC GREATER 2 AND ARGV2 STREQUAL "ALL")
+      list(APPEND target_options ALL)
+    endif()
+    add_custom_target(${TARGET_NAME} ${target_options}
+      COMMENT "ERROR: ${ERROR_DETAIL}"
+      COMMAND ${CMAKE_COMMAND} -E echo "[${TARGET_NAME}] ERROR: Python 3 interpreter not found."
       COMMAND ${CMAKE_COMMAND} -E false
       VERBATIM
     )
+  endfunction()
+
+  scopetimer_add_missing_python_target(
+    scopetimer_header_coverage
+    "Python 3 is required for the ScopeTimer.hpp header coverage helper"
+  )
+  scopetimer_add_missing_python_target(
+    demo_benchmark
+    "Python 3 is required for the benchmark helper"
+  )
+  scopetimer_add_missing_python_target(
+    demo_benchmark_matrix
+    "Python 3 is required for the benchmark matrix helper"
+  )
+  if(AUTO_REFRESH_DOCS)
+    scopetimer_add_missing_python_target(
+      docs_refresh
+      "Python 3 is required for automatic markdown refresh"
+      ALL
+    )
   else()
-    add_custom_target(docs_refresh
-      COMMENT "ERROR: Python 3 is required for automatic markdown refresh"
-      COMMAND ${CMAKE_COMMAND} -E echo "[docs_refresh] ERROR: Python 3 interpreter not found."
-      COMMAND ${CMAKE_COMMAND} -E false
-      VERBATIM
+    scopetimer_add_missing_python_target(
+      docs_refresh
+      "Python 3 is required for automatic markdown refresh"
     )
   endif()
 endif()
