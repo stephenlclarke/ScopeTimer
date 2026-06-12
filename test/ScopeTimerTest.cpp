@@ -1314,7 +1314,7 @@ private:
             if (kv.first == "SCOPETIMER_PROBE") {
                 probeSet = true;
             }
-            envBlock += kv.first + "=" + kv.second + " ";
+            envBlock += kv.first + "=" + shellEscape(kv.second) + " ";
         }
         if (!probeSet) {
             envBlock = std::string("SCOPETIMER_PROBE=1 ") + envBlock;
@@ -1422,15 +1422,28 @@ private:
     }
 
     static void test_disabled_case_insensitivity_child_process() {
-        const char* variants[] = {"off", "Off", "FALSE", "False", "nO"};
+        const char* variants[] = {"off", "Off", "FALSE", "False", "nO", " off ", "\tFALSE\t"};
         for (const char* variant : variants) {
+            char templ[] = "/tmp/scopetimer_disabled_variantXXXXXX";
+            char* tdir = ::mkdtemp(templ);
+            std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+            const std::string logfile = tmpdir + "/ScopeTimer.log";
+            std::remove(logfile.c_str());
             std::vector<std::pair<std::string,std::string>> env = {
                 {"SCOPE_TIMER", variant},
-                {"SCOPE_TIMER_FORMAT", "MICROS"}
+                {"SCOPE_TIMER_FORMAT", "MICROS"},
+                {"SCOPE_TIMER_DIR", tmpdir}
             };
             int rc = run_child_with_env(env);
             const std::string msg = std::string("disabled env variant '") + variant + "' handled in child process";
             expect(rc == 0, msg.c_str());
+            std::ifstream in(logfile, std::ios::binary);
+            const std::string logMsg = std::string("disabled env variant '") + variant + "' suppresses logging";
+            expect(!in.good(), logMsg.c_str());
+            std::remove(logfile.c_str());
+            if (tdir) {
+                ::rmdir(tmpdir.c_str());
+            }
         }
     }
 

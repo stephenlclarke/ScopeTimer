@@ -103,6 +103,8 @@ def refresh_build_doc(
 ) -> None:
     remove_tree(docs_build_dir)
 
+    include_sonar = bool(os.environ.get("SONAR_TOKEN"))
+    sonar_configure_flag = "-DENABLE_SONAR=ON" if include_sonar else "-DENABLE_SONAR=OFF"
     configure_cmd = [
         "cmake",
         "-S",
@@ -110,6 +112,7 @@ def refresh_build_doc(
         "-B",
         relative_display_path(docs_build_dir, repo_root),
         "-DAUTO_REFRESH_DOCS=OFF",
+        sonar_configure_flag,
     ]
     actual_configure_cmd = [
         "cmake",
@@ -118,6 +121,7 @@ def refresh_build_doc(
         "-B",
         str(docs_build_dir),
         "-DAUTO_REFRESH_DOCS=OFF",
+        sonar_configure_flag,
     ]
     build_cmd = ["cmake", "--build", relative_display_path(docs_build_dir, repo_root), "-j"]
     actual_build_cmd = ["cmake", "--build", str(docs_build_dir), "-j"]
@@ -142,7 +146,6 @@ def refresh_build_doc(
     log_parts.append(run_command(actual_build_cmd, cwd=repo_root).stdout)
     log_parts.append(run_command(actual_test_cmd, cwd=repo_root).stdout)
 
-    include_sonar = bool(os.environ.get("SONAR_TOKEN"))
     if include_sonar:
         sonar_run = run_command(actual_sonar_cmd, cwd=repo_root, check=False)
         log_parts.append(sonar_run.stdout)
@@ -179,9 +182,10 @@ def refresh_build_doc(
         "- [BENCHMARK.md](BENCHMARK.md) for the latest benchmark snapshot",
         "",
         "`coverage` and `sonar_scan` require `gcovr`. `sonar_scan` also needs",
-        "`SONAR_TOKEN` plus access to your SonarCloud or SonarQube server, and",
-        "it passes the active CMake build directory through to the scanner so",
-        "out-of-tree builds analyze the right artifacts.",
+        "`SONAR_TOKEN`, access to your SonarCloud or SonarQube server, and a",
+        "build configured with `-DENABLE_SONAR=ON`. It passes the active CMake",
+        "build directory through to the scanner so out-of-tree builds analyze",
+        "the right artifacts.",
         "",
         "`leak_check` runs `scopetimer_tests` under the native leak detector",
         "for the current platform: `leaks` on macOS and `valgrind` on Linux.",
