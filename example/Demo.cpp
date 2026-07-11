@@ -22,13 +22,14 @@
  */
 
 #include "ScopeTimer.hpp"
+#include "ExampleOptions.hpp"
 #include "TelemetryWorkload.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -38,11 +39,13 @@
 using namespace std::chrono_literals;
 
 namespace workload = ::xyzzy::scopetimer::example_workload;
+namespace options = ::xyzzy::scopetimer::example_options;
 using TelemetryEvent = workload::TelemetryEvent;
 using TelemetryTotals = workload::TelemetryTotals;
 
 struct DemoOptions {
     int iterations{1};
+    bool showHelp{false};
 };
 
 class DemoStdoutLogSink final : public ::xyzzy::scopetimer::ScopeTimer::LogSink {
@@ -76,16 +79,17 @@ static std::uint64_t processTelemetryBatchExample(
 
 // CPU-bound example: simulate a telemetry ingestion hot path.
 static void hotPathIngestion(int intensity) {
-    const std::size_t eventsPerBatch = 1024U + static_cast<std::size_t>(intensity * 256U);
-    const int batches = 4 + intensity;
+    const auto intensitySize = static_cast<std::size_t>(intensity);
+    const std::size_t eventsPerBatch = 1024U + (intensitySize * 256U);
+    const std::size_t batches = 4U + intensitySize;
     auto batch = workload::makeTelemetryBatch(eventsPerBatch);
     TelemetryTotals totals{};
 
     SCOPE_TIMER("hotPath:total");
-    for (int batchIndex = 0; batchIndex < batches; ++batchIndex) {
-        totals.checksum ^= processTelemetryBatchExample(batch, totals) + static_cast<std::uint64_t>(batchIndex);
+    for (std::size_t batchIndex = 0; batchIndex < batches; ++batchIndex) {
+        totals.checksum ^= processTelemetryBatchExample(batch, totals) + batchIndex;
 
-        const auto pivot = static_cast<std::size_t>((batchIndex * 131U) % batch.size());
+        const auto pivot = (batchIndex * 131U) % batch.size();
         batch[pivot].statusCode = batch[pivot].statusCode == 200U ? 503U : 200U;
         batch[pivot].flags ^= 0x05U;
         batch[pivot].bytes += static_cast<std::uint32_t>(batchIndex & 0x07U);
@@ -144,7 +148,7 @@ static void loopedWork(int iterations) {
 static void threadedWork(int threads) {
     SCOPE_TIMER("threadedWork:total");
     std::vector<std::thread> tg;
-    tg.reserve(threads);
+    tg.reserve(static_cast<std::size_t>(threads));
     for (int i = 0; i < threads; ++i) {
         tg.emplace_back([i] {
             SCOPE_TIMER("threadedWork:worker");
@@ -158,22 +162,26 @@ static void threadedWork(int threads) {
 
 // Example 7: Thread-buffered sink around a burst of small timers.
 static void bufferedSinkExample() {
-    SCOPE_TIMER("bufferedSinkExample");
     SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(4U * 1024U);
-    for (int i = 0; i < 3; ++i) {
-        SCOPE_TIMER("bufferedSinkExample:iteration");
-        busyFor(150us);
+    {
+        SCOPE_TIMER("bufferedSinkExample");
+        for (int i = 0; i < 3; ++i) {
+            SCOPE_TIMER("bufferedSinkExample:iteration");
+            busyFor(150us);
+        }
     }
     SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
 }
 
 // Example 8: Async sink for caller-thread-sensitive logging.
 static void asyncSinkExample() {
-    SCOPE_TIMER("asyncSinkExample");
     SCOPE_TIMER_ENABLE_ASYNC_SINK(4U * 1024U);
-    for (int i = 0; i < 3; ++i) {
-        SCOPE_TIMER("asyncSinkExample:iteration");
-        busyFor(120us);
+    {
+        SCOPE_TIMER("asyncSinkExample");
+        for (int i = 0; i < 3; ++i) {
+            SCOPE_TIMER("asyncSinkExample:iteration");
+            busyFor(120us);
+        }
     }
     SCOPE_TIMER_DISABLE_ASYNC_SINK();
 }
@@ -277,34 +285,71 @@ static void runDemoSuite(int intensity) {
     }
 }
 
+static void printUsage() {
+    std::cout << "Usage: Demo [--iterations=N]\n"
+                 "  N must be between 1 and " << options::MaxDemoIterations << ".\n"
+                 "The demo executable showcases ScopeTimer usage in educational\n"
+                 "scenarios, including nested scopes, conditional timing,\n"
+                 "threaded work, buffered logging, async logging, a plug-in\n"
+                 "logger sink, and the compact hot-path timer.\n";
+}
+
 static DemoOptions parseOptions(int argc, char** argv) {
     SCOPE_TIMER("Demo::parseOptions");
 
-    DemoOptions options;
+    DemoOptions parsedOptions;
+    bool iterationsSet = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: Demo [--iterations=N]\n"
-                         "The demo executable showcases ScopeTimer usage in educational\n"
-                         "scenarios, including nested scopes, conditional timing,\n"
-                         "threaded work, buffered logging, async logging, a plug-in\n"
-                         "logger sink, and the compact hot-path timer.\n";
-            std::exit(0);
+            parsedOptions.showHelp = true;
         } else if (arg.rfind("--iterations=", 0) == 0) {
-            options.iterations = std::max(1, std::stoi(arg.substr(13)));
+            if (iterationsSet) {
+                throw options::OptionError("iterations may only be specified once");
+            }
+            parsedOptions.iterations = static_cast<int>(options::parseBoundedUnsigned(
+                std::string_view(arg).substr(13),
+                "iterations",
+                1U,
+                options::MaxDemoIterations
+            ));
+            iterationsSet = true;
+        } else if (!arg.empty() && arg.front() == '-') {
+            throw options::OptionError("unknown option '" + arg + "'");
         } else {
-            options.iterations = std::max(1, std::stoi(arg));
+            if (iterationsSet) {
+                throw options::OptionError("iterations may only be specified once");
+            }
+            parsedOptions.iterations = static_cast<int>(options::parseBoundedUnsigned(
+                arg,
+                "iterations",
+                1U,
+                options::MaxDemoIterations
+            ));
+            iterationsSet = true;
         }
     }
-    return options;
+    return parsedOptions;
 }
 
 int main(int argc, char** argv) {
     SCOPE_TIMER("Demo::main");
 
-    const DemoOptions options = parseOptions(argc, argv);
-    for (int i = 0; i < options.iterations; ++i) {
-        runDemoSuite(options.iterations);
+    try {
+        const DemoOptions parsedOptions = parseOptions(argc, argv);
+        if (parsedOptions.showHelp) {
+            printUsage();
+            return 0;
+        }
+        for (int i = 0; i < parsedOptions.iterations; ++i) {
+            runDemoSuite(parsedOptions.iterations);
+        }
+        return 0;
+    } catch (const options::OptionError& error) {
+        std::cerr << "Demo: " << error.what() << "\nTry 'Demo --help' for usage.\n";
+        return 2;
+    } catch (const std::exception& error) {
+        std::cerr << "Demo failed: " << error.what() << '\n';
+        return 1;
     }
-    return 0;
 }

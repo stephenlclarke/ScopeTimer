@@ -6180,6 +6180,1099 @@
           }
         }
       ]
+    },
+    {
+      "recorded_at_utc": "2026-07-11T18:10:56+00:00",
+      "git": {
+        "branch": "critical-review-fixes",
+        "commit": "51cd13c3a796151772d208247012fba00c6260a6",
+        "short_commit": "51cd13c",
+        "subject": "perf(scopetimer): reduce logging overhead and enrich benchmarks",
+        "message": "perf(scopetimer): reduce logging overhead and enrich benchmarks",
+        "dirty": true
+      },
+      "comparison_reference": {
+        "kind": "last_checked_in_main",
+        "resolved_ref": "origin/main",
+        "recorded_at_utc": "2026-06-12T16:26:56+00:00",
+        "commit": "cfa089990cb9685524a11a216cbdff71ea7df184",
+        "short_commit": "cfa0899",
+        "branch": "develop",
+        "comparison_fingerprint": null
+      },
+      "machine": {
+        "system": {
+          "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+          "system": "Darwin",
+          "release": "25.5.0",
+          "version": "Darwin Kernel Version 25.5.0: Mon Apr 27 20:41:12 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T6050",
+          "machine": "arm64",
+          "python": "3.14.6"
+        },
+        "cpu": {
+          "brand": "Apple M5 Pro",
+          "physical_cores": 18,
+          "logical_cores": 18,
+          "architecture": "arm64"
+        },
+        "memory": {
+          "total_bytes": 25769803776,
+          "total": "24.00 GiB"
+        },
+        "disk": {
+          "path": "/Users/sclarke/github/ScopeTimer",
+          "total_bytes": 1995165736960,
+          "used_bytes": 532198633472,
+          "free_bytes": 1462967103488,
+          "total": "1.81 TiB",
+          "used": "495.65 GiB",
+          "free": "1.33 TiB",
+          "filesystem": "/dev/disk3s1s1",
+          "blocks_1024": 1948404040,
+          "used_1024": 519725228,
+          "available_1024": 1428678812,
+          "capacity": "27%",
+          "mount_point": "/",
+          "apfs_container": "disk3",
+          "bus_protocol": "Apple Fabric",
+          "device_identifier": "disk3s1s1",
+          "device_node": "/dev/disk3s1s1",
+          "filesystem_name": "APFS",
+          "filesystem_type": "apfs",
+          "internal": true,
+          "media_name": "",
+          "media_type": "Generic",
+          "smart_status": "Verified",
+          "solid_state": true,
+          "volume_name": "Macintosh HD"
+        }
+      },
+      "toolchain": {
+        "build_dir": "./build-review/benchmark-build",
+        "cache_found": true,
+        "compiler_path": "/usr/bin/c++",
+        "compiler_name": "c++",
+        "compiler_version_output": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+        "configured_cxx_flags": "-O3",
+        "cmake": {
+          "CMAKE_BUILD_TYPE": "",
+          "CMAKE_CXX_COMPILER_ID": null,
+          "CMAKE_CXX_COMPILER_VERSION": null,
+          "CMAKE_CXX_FLAGS": "-O3",
+          "CMAKE_CXX_FLAGS_DEBUG": "-g",
+          "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+          "CMAKE_GENERATOR": "Unix Makefiles",
+          "CMAKE_SYSTEM_NAME": null,
+          "CMAKE_SYSTEM_PROCESSOR": null
+        },
+        "binary_sha256": "9ac0e70e60a7b04b299de5446c2c1574978b9c8e81c2e5017b3cc952cc6c328d"
+      },
+      "benchmark_config": {
+        "binary": "./build-review/benchmark-build/Benchmark",
+        "build_dir": "./build-review/benchmark-build",
+        "scenario": "hotpath-bench",
+        "iterations": 5,
+        "runs": 8,
+        "threads": 4,
+        "sink_bytes": 4096,
+        "cxx_flags": "-O3"
+      },
+      "comparison_fingerprint": {
+        "version": 1,
+        "sha256": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+        "complete": true,
+        "missing_fields": [],
+        "context": {
+          "fingerprint_version": 1,
+          "benchmark": {
+            "scenario": "hotpath-bench",
+            "iterations": 5,
+            "runs": 8,
+            "threads": 4,
+            "sink_bytes": 4096,
+            "cxx_flags": "-O3",
+            "profiles": [
+              {
+                "name": "standard_default",
+                "env": {}
+              },
+              {
+                "name": "standard_walltime_off",
+                "env": {
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              },
+              {
+                "name": "standard_null_sink",
+                "env": {
+                  "SCOPE_TIMER_BENCH_SINK": "NULL",
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              },
+              {
+                "name": "buffered_single_thread",
+                "env": {
+                  "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              },
+              {
+                "name": "buffered_threaded",
+                "env": {
+                  "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
+                  "SCOPE_TIMER_BENCH_SINK_BYTES": "4096",
+                  "SCOPE_TIMER_BENCH_THREADS": "4",
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              },
+              {
+                "name": "async_threaded",
+                "env": {
+                  "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+                  "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+                  "SCOPE_TIMER_BENCH_THREADS": "4",
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              },
+              {
+                "name": "hotpath_async_threaded",
+                "env": {
+                  "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+                  "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+                  "SCOPE_TIMER_BENCH_THREADS": "4",
+                  "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              },
+              {
+                "name": "hotpath_null_sink",
+                "env": {
+                  "SCOPE_TIMER_BENCH_SINK": "NULL",
+                  "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+                  "SCOPE_TIMER_WALLTIME": "0"
+                }
+              }
+            ]
+          },
+          "machine": {
+            "system": "Darwin",
+            "release": "25.5.0",
+            "machine": "arm64",
+            "cpu_brand": "Apple M5 Pro",
+            "physical_cores": 18,
+            "logical_cores": 18,
+            "memory_bytes": 25769803776
+          },
+          "toolchain": {
+            "compiler_name": "c++",
+            "compiler_version_output": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+            "configured_cxx_flags": "-O3",
+            "cmake_build_type": "",
+            "cmake_compiler_id": null,
+            "cmake_compiler_version": null,
+            "cmake_cxx_flags": "-O3",
+            "cmake_cxx_flags_debug": "-g",
+            "cmake_cxx_flags_release": "-O3 -DNDEBUG",
+            "cmake_generator": "Unix Makefiles",
+            "cmake_system_name": null,
+            "cmake_system_processor": null
+          }
+        }
+      },
+      "speed_summary": {
+        "fastest_profile": {
+          "name": "hotpath_async_threaded",
+          "label": "Hot-path timer, async sink",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+            "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+            "SCOPE_TIMER_BENCH_THREADS": "4",
+            "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "approx_per_record_us": 0.009970882418362394,
+          "approx_per_record_ns": 9.970882418362393,
+          "delta_mean_s": 0.0030631248750978557,
+          "enabled_mean_s": 0.01295530712513937,
+          "enabled_log_lines": 307207
+        },
+        "profiles": [
+          {
+            "name": "standard_default",
+            "label": "Standard timer, default sink",
+            "env": {},
+            "approx_per_record_us": 1.4090156561071951,
+            "approx_per_record_ns": 1409.0156561071951,
+            "delta_mean_s": 0.10822226549862535,
+            "enabled_mean_s": 0.11779960412468427,
+            "enabled_log_lines": 76807
+          },
+          {
+            "name": "standard_walltime_off",
+            "label": "Standard timer, wall time disabled",
+            "env": {
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 1.2106028861248155,
+            "approx_per_record_ns": 1210.6028861248155,
+            "delta_mean_s": 0.0929827758745887,
+            "enabled_mean_s": 0.10241863537476092,
+            "enabled_log_lines": 76807
+          },
+          {
+            "name": "standard_null_sink",
+            "label": "Standard timer, null sink",
+            "env": {
+              "SCOPE_TIMER_BENCH_SINK": "NULL",
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 0.033296799119088005,
+            "approx_per_record_ns": 33.29679911908801,
+            "delta_mean_s": 0.002557427249939792,
+            "enabled_mean_s": 0.011648885624708782,
+            "enabled_log_lines": 0
+          },
+          {
+            "name": "buffered_single_thread",
+            "label": "Standard timer, buffered sink",
+            "env": {
+              "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 0.04948686154006768,
+            "approx_per_record_ns": 49.48686154006768,
+            "delta_mean_s": 0.0038009373743079777,
+            "enabled_mean_s": 0.012989072874916019,
+            "enabled_log_lines": 76807
+          },
+          {
+            "name": "buffered_threaded",
+            "label": "Standard timer, buffered sink (threaded stress)",
+            "env": {
+              "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
+              "SCOPE_TIMER_BENCH_SINK_BYTES": "4096",
+              "SCOPE_TIMER_BENCH_THREADS": "4",
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 0.24044506147462108,
+            "approx_per_record_ns": 240.44506147462107,
+            "delta_mean_s": 0.07386640600043393,
+            "enabled_mean_s": 0.08377666650039828,
+            "enabled_log_lines": 307207
+          },
+          {
+            "name": "async_threaded",
+            "label": "Standard timer, async sink",
+            "env": {
+              "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+              "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+              "SCOPE_TIMER_BENCH_THREADS": "4",
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 0.013021724764355532,
+            "approx_per_record_ns": 13.021724764355532,
+            "delta_mean_s": 0.00400036499968337,
+            "enabled_mean_s": 0.013935520999439177,
+            "enabled_log_lines": 307207
+          },
+          {
+            "name": "hotpath_async_threaded",
+            "label": "Hot-path timer, async sink",
+            "env": {
+              "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+              "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+              "SCOPE_TIMER_BENCH_THREADS": "4",
+              "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 0.009970882418362394,
+            "approx_per_record_ns": 9.970882418362393,
+            "delta_mean_s": 0.0030631248750978557,
+            "enabled_mean_s": 0.01295530712513937,
+            "enabled_log_lines": 307207
+          },
+          {
+            "name": "hotpath_null_sink",
+            "label": "Hot-path timer, null sink",
+            "env": {
+              "SCOPE_TIMER_BENCH_SINK": "NULL",
+              "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+              "SCOPE_TIMER_WALLTIME": "0"
+            },
+            "approx_per_record_us": 0.013930139833283985,
+            "approx_per_record_ns": 13.930139833283985,
+            "delta_mean_s": 0.001069932250175043,
+            "enabled_mean_s": 0.010288187500464119,
+            "enabled_log_lines": 0
+          }
+        ]
+      },
+      "results": [
+        {
+          "name": "standard_default",
+          "label": "Standard timer, default sink",
+          "env": {},
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009577338626058918,
+          "disabled_median_s": 0.009605291501429747,
+          "enabled_mean_s": 0.11779960412468427,
+          "enabled_median_s": 0.11697493750034482,
+          "delta_mean_s": 0.10822226549862535,
+          "delta_median_s": 0.10729758350134944,
+          "overhead_mean_pct": 1130.4703503113205,
+          "overhead_median_pct": 1118.7793324780314,
+          "disabled_min_s": 0.009187584000756033,
+          "disabled_max_s": 0.009833957999944687,
+          "enabled_min_s": 0.10995329099750961,
+          "enabled_max_s": 0.13027283300107229,
+          "enabled_log_lines": 76807,
+          "enabled_log_bytes": 14543130,
+          "expected_enabled_records": 76807,
+          "per_record_denominator": 76807,
+          "profile_emits_output": true,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 1.4090156561071951,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "standard_walltime_off",
+          "label": "Standard timer, wall time disabled",
+          "env": {
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009435859500172228,
+          "disabled_median_s": 0.009381500000017695,
+          "enabled_mean_s": 0.10241863537476092,
+          "enabled_median_s": 0.10193170849925082,
+          "delta_mean_s": 0.0929827758745887,
+          "delta_median_s": 0.09255020849923312,
+          "overhead_mean_pct": 985.5189614597045,
+          "overhead_median_pct": 986.5209267669501,
+          "disabled_min_s": 0.009281208000174956,
+          "disabled_max_s": 0.009640042000683025,
+          "enabled_min_s": 0.09997116600061418,
+          "enabled_max_s": 0.10772641699804808,
+          "enabled_log_lines": 76807,
+          "enabled_log_bytes": 9757872,
+          "expected_enabled_records": 76807,
+          "per_record_denominator": 76807,
+          "profile_emits_output": true,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 1.2106028861248155,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "standard_null_sink",
+          "label": "Standard timer, null sink",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "NULL",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.00909145837476899,
+          "disabled_median_s": 0.009180791499602492,
+          "enabled_mean_s": 0.011648885624708782,
+          "enabled_median_s": 0.011643396001090878,
+          "delta_mean_s": 0.002557427249939792,
+          "delta_median_s": 0.002592354499938665,
+          "overhead_mean_pct": 28.238964456698913,
+          "overhead_median_pct": 27.894060641230812,
+          "disabled_min_s": 0.008416292002948467,
+          "disabled_max_s": 0.009593541999493027,
+          "enabled_min_s": 0.011159666999446927,
+          "enabled_max_s": 0.012278624999453314,
+          "enabled_log_lines": 0,
+          "enabled_log_bytes": 0,
+          "expected_enabled_records": 76807,
+          "per_record_denominator": 76807,
+          "profile_emits_output": false,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 0.033296799119088005,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "buffered_single_thread",
+          "label": "Standard timer, buffered sink",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009188135500608041,
+          "disabled_median_s": 0.009180396000374458,
+          "enabled_mean_s": 0.012989072874916019,
+          "enabled_median_s": 0.012804375000996515,
+          "delta_mean_s": 0.0038009373743079777,
+          "delta_median_s": 0.0037142705004953314,
+          "overhead_mean_pct": 41.521733984363856,
+          "overhead_median_pct": 40.59621977334458,
+          "disabled_min_s": 0.008515042001818074,
+          "disabled_max_s": 0.010074457997689024,
+          "enabled_min_s": 0.01264029199955985,
+          "enabled_max_s": 0.013648374999320367,
+          "enabled_log_lines": 76807,
+          "enabled_log_bytes": 9756000,
+          "expected_enabled_records": 76807,
+          "per_record_denominator": 76807,
+          "profile_emits_output": true,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 0.04948686154006768,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "buffered_threaded",
+          "label": "Standard timer, buffered sink (threaded stress)",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "BUFFERED",
+            "SCOPE_TIMER_BENCH_SINK_BYTES": "4096",
+            "SCOPE_TIMER_BENCH_THREADS": "4",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009910260499964352,
+          "disabled_median_s": 0.00991820850140357,
+          "enabled_mean_s": 0.08377666650039828,
+          "enabled_median_s": 0.08334929150078096,
+          "delta_mean_s": 0.07386640600043393,
+          "delta_median_s": 0.073484479000399,
+          "overhead_mean_pct": 745.6010159381685,
+          "overhead_median_pct": 747.5081186679772,
+          "disabled_min_s": 0.009675917001004564,
+          "disabled_max_s": 0.010289792000548914,
+          "enabled_min_s": 0.0826829159996123,
+          "enabled_max_s": 0.08641287499995087,
+          "enabled_log_lines": 307207,
+          "enabled_log_bytes": 39025522,
+          "expected_enabled_records": 307207,
+          "per_record_denominator": 307207,
+          "profile_emits_output": true,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 0.24044506147462108,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "async_threaded",
+          "label": "Standard timer, async sink",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+            "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+            "SCOPE_TIMER_BENCH_THREADS": "4",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009935155999755807,
+          "disabled_median_s": 0.009935937499903957,
+          "enabled_mean_s": 0.013935520999439177,
+          "enabled_median_s": 0.013283645999763394,
+          "delta_mean_s": 0.00400036499968337,
+          "delta_median_s": 0.0033293964988843072,
+          "overhead_mean_pct": 40.349158517576505,
+          "overhead_median_pct": 33.45715569062845,
+          "disabled_min_s": 0.009776625000085915,
+          "disabled_max_s": 0.010079415998916375,
+          "enabled_min_s": 0.013043249997281237,
+          "enabled_max_s": 0.01605424999797833,
+          "enabled_log_lines": 307207,
+          "enabled_log_bytes": 39025424,
+          "expected_enabled_records": 307207,
+          "per_record_denominator": 307207,
+          "profile_emits_output": true,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 0.013021724764355532,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "hotpath_async_threaded",
+          "label": "Hot-path timer, async sink",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "ASYNC",
+            "SCOPE_TIMER_BENCH_SINK_BYTES": "65536",
+            "SCOPE_TIMER_BENCH_THREADS": "4",
+            "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009892182250041515,
+          "disabled_median_s": 0.009908291500323685,
+          "enabled_mean_s": 0.01295530712513937,
+          "enabled_median_s": 0.012065874499967322,
+          "delta_mean_s": 0.0030631248750978557,
+          "delta_median_s": 0.0022011870005371748,
+          "overhead_mean_pct": 30.93372603823916,
+          "overhead_median_pct": 22.312887136468937,
+          "disabled_min_s": 0.009801291998883244,
+          "disabled_max_s": 0.009953541000868427,
+          "enabled_min_s": 0.011744666000595316,
+          "enabled_max_s": 0.019200292001187336,
+          "enabled_log_lines": 307207,
+          "enabled_log_bytes": 9218645,
+          "expected_enabled_records": 307207,
+          "per_record_denominator": 307207,
+          "profile_emits_output": true,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 0.009970882418362394,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        },
+        {
+          "name": "hotpath_null_sink",
+          "label": "Hot-path timer, null sink",
+          "env": {
+            "SCOPE_TIMER_BENCH_SINK": "NULL",
+            "SCOPE_TIMER_BENCH_TIMER": "HOTPATH",
+            "SCOPE_TIMER_WALLTIME": "0"
+          },
+          "binary": "./build-review/benchmark-build/Benchmark",
+          "scenario": "hotpath-bench",
+          "iterations": 5,
+          "runs": 8,
+          "instrumentation_probe": {
+            "protocol": 1,
+            "identity": "ScopeTimerBenchmark",
+            "instrumentation": "enabled"
+          },
+          "pair_orders": [
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ],
+            [
+              "disabled",
+              "enabled"
+            ],
+            [
+              "enabled",
+              "disabled"
+            ]
+          ],
+          "run_sequence": [
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled",
+            "disabled",
+            "enabled",
+            "enabled",
+            "disabled"
+          ],
+          "disabled_mean_s": 0.009218255250289076,
+          "disabled_median_s": 0.009264500000426779,
+          "enabled_mean_s": 0.010288187500464119,
+          "enabled_median_s": 0.010163500000999193,
+          "delta_mean_s": 0.001069932250175043,
+          "delta_median_s": 0.0010273750012856908,
+          "overhead_mean_pct": 11.61792390571893,
+          "overhead_median_pct": 11.413948732777834,
+          "disabled_min_s": 0.008952250002039364,
+          "disabled_max_s": 0.009498916999291396,
+          "enabled_min_s": 0.01001150000229245,
+          "enabled_max_s": 0.01077745899965521,
+          "enabled_log_lines": 0,
+          "enabled_log_bytes": 0,
+          "expected_enabled_records": 76807,
+          "per_record_denominator": 76807,
+          "profile_emits_output": false,
+          "disabled_log_exists": false,
+          "approx_per_record_us": 0.013930139833283985,
+          "comparison_to_main_baseline": {
+            "indicator": "incomparable",
+            "status": "incomparable",
+            "summary": "incomparable: main baseline has no configuration fingerprint",
+            "current_fingerprint": "2004021241e2df8b290560f6a8a7c19ef883530face958b2e7a64d19d83867b4",
+            "baseline_fingerprint": null
+          }
+        }
+      ]
     }
   ]
 }

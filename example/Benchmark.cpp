@@ -22,6 +22,7 @@
  */
 
 #include "ScopeTimer.hpp"
+#include "ExampleOptions.hpp"
 #include "TelemetryWorkload.hpp"
 
 #include <algorithm>
@@ -30,12 +31,12 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
-#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace workload = ::xyzzy::scopetimer::example_workload;
+namespace options = ::xyzzy::scopetimer::example_options;
 using TelemetryEvent = workload::TelemetryEvent;
 using TelemetryTotals = workload::TelemetryTotals;
 
@@ -58,6 +59,13 @@ enum class BenchTimerMode {
 struct BenchmarkOptions {
     int iterations{1};
     BenchmarkScenario scenario{BenchmarkScenario::HotPathBench};
+};
+
+struct BenchmarkRuntimeOptions {
+    BenchSinkMode sinkMode{BenchSinkMode::Default};
+    BenchTimerMode timerMode{BenchTimerMode::Default};
+    int threadCount{1};
+    std::size_t sinkBytes{256U * 1024U};
 };
 
 static std::atomic<std::uint64_t>& hotPathSink() {
@@ -83,56 +91,68 @@ static inline void ingestTelemetryRecordHotPath(
     workload::ingestTelemetryRecordBody(event, totals, salt);
 }
 
-static int positiveEnvOrDefault(const char* envName, int defaultValue) {
-    if (const char* env = std::getenv(envName)) {
-        try {
-            return std::max(1, std::stoi(env));
-        } catch (const std::invalid_argument&) {
-            return defaultValue;
-        } catch (const std::out_of_range&) {
-            return defaultValue;
-        }
-    }
-    return defaultValue;
-}
-
-static std::size_t positiveSizeEnvOrDefault(const char* envName, std::size_t defaultValue) {
-    if (const char* env = std::getenv(envName)) {
-        try {
-            return std::max<std::size_t>(1U, static_cast<std::size_t>(std::stoull(env)));
-        } catch (const std::invalid_argument&) {
-            return defaultValue;
-        } catch (const std::out_of_range&) {
-            return defaultValue;
-        }
-    }
-    return defaultValue;
-}
-
 static BenchSinkMode benchSinkMode() {
     if (const char* env = std::getenv("SCOPE_TIMER_BENCH_SINK")) {
-        const std::string value(env);
-        if (value == "BUFFERED" || value == "buffered") {
+        const std::string value = options::uppercaseAscii(env);
+        if (value == "DEFAULT") {
+            return BenchSinkMode::Default;
+        }
+        if (value == "BUFFERED") {
             return BenchSinkMode::Buffered;
         }
-        if (value == "ASYNC" || value == "async") {
+        if (value == "ASYNC") {
             return BenchSinkMode::Async;
         }
-        if (value == "NULL" || value == "null" || value == "NOOP" || value == "noop") {
+        if (value == "NULL" || value == "NOOP") {
             return BenchSinkMode::Null;
         }
+        throw options::OptionError(
+            "SCOPE_TIMER_BENCH_SINK must be DEFAULT, BUFFERED, ASYNC, NULL, or NOOP; got '" +
+            std::string(env) + "'"
+        );
     }
     return BenchSinkMode::Default;
 }
 
 static BenchTimerMode benchTimerMode() {
     if (const char* env = std::getenv("SCOPE_TIMER_BENCH_TIMER")) {
-        const std::string value(env);
-        if (value == "HOTPATH" || value == "hotpath" || value == "FAST" || value == "fast") {
+        const std::string value = options::uppercaseAscii(env);
+        if (value == "DEFAULT" || value == "STANDARD") {
+            return BenchTimerMode::Default;
+        }
+        if (value == "HOTPATH" || value == "FAST") {
             return BenchTimerMode::HotPath;
         }
+        throw options::OptionError(
+            "SCOPE_TIMER_BENCH_TIMER must be DEFAULT, STANDARD, HOTPATH, or FAST; got '" +
+            std::string(env) + "'"
+        );
     }
     return BenchTimerMode::Default;
+}
+
+static BenchmarkRuntimeOptions parseRuntimeOptions() {
+    BenchmarkRuntimeOptions runtimeOptions;
+    runtimeOptions.sinkMode = benchSinkMode();
+    runtimeOptions.timerMode = benchTimerMode();
+
+    if (const char* env = std::getenv("SCOPE_TIMER_BENCH_THREADS")) {
+        runtimeOptions.threadCount = static_cast<int>(options::parseBoundedUnsigned(
+            env,
+            "SCOPE_TIMER_BENCH_THREADS",
+            1U,
+            options::MaxBenchmarkThreads
+        ));
+    }
+    if (const char* env = std::getenv("SCOPE_TIMER_BENCH_SINK_BYTES")) {
+        runtimeOptions.sinkBytes = options::parseBoundedSize(
+            env,
+            "SCOPE_TIMER_BENCH_SINK_BYTES",
+            1U,
+            options::MaxBenchmarkSinkBytes
+        );
+    }
+    return runtimeOptions;
 }
 
 class BenchSinkScope {
@@ -147,15 +167,14 @@ public:
         }
     };
 
-    BenchSinkScope() {
-        const std::size_t sinkBytes = positiveSizeEnvOrDefault("SCOPE_TIMER_BENCH_SINK_BYTES", 256U * 1024U);
-        switch (benchSinkMode()) {
+    explicit BenchSinkScope(const BenchmarkRuntimeOptions& runtimeOptions) {
+        switch (runtimeOptions.sinkMode) {
             case BenchSinkMode::Buffered:
-                SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(sinkBytes);
+                SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(runtimeOptions.sinkBytes);
                 buffered_ = true;
                 break;
             case BenchSinkMode::Async:
-                SCOPE_TIMER_ENABLE_ASYNC_SINK(sinkBytes);
+                SCOPE_TIMER_ENABLE_ASYNC_SINK(runtimeOptions.sinkBytes);
                 async_ = true;
                 break;
             case BenchSinkMode::Null:
@@ -209,10 +228,10 @@ static void hotPathBenchmarkWorker(int rounds, BenchTimerMode timerMode) {
     hotPathSink().fetch_xor(totals.checksum + totals.retries + totals.routeBytes[0]);
 }
 
-static void hotPathBenchmark(int iterations) {
+static void hotPathBenchmark(int iterations, const BenchmarkRuntimeOptions& runtimeOptions) {
     const int rounds = std::max(1, iterations) * 12;
-    const int threadCount = positiveEnvOrDefault("SCOPE_TIMER_BENCH_THREADS", 1);
-    const BenchTimerMode timerMode = benchTimerMode();
+    const int threadCount = runtimeOptions.threadCount;
+    const BenchTimerMode timerMode = runtimeOptions.timerMode;
 
     SCOPE_TIMER("hotPath:benchmark");
     if (threadCount == 1) {
@@ -221,7 +240,7 @@ static void hotPathBenchmark(int iterations) {
     }
 
     std::vector<std::thread> workers;
-    workers.reserve(threadCount);
+    workers.reserve(static_cast<std::size_t>(threadCount));
     for (int i = 0; i < threadCount; ++i) {
         workers.emplace_back([rounds, timerMode] {
             hotPathBenchmarkWorker(rounds, timerMode);
@@ -232,48 +251,121 @@ static void hotPathBenchmark(int iterations) {
     }
 }
 
+static void printUsage() {
+    std::cout << "Usage: Benchmark [--iterations=N] [--scenario=hotpath-bench]\n"
+                 "  N must be between 1 and " << options::MaxBenchmarkIterations << ".\n"
+                 "The dedicated benchmark executable drives a CPU-bound ScopeTimer\n"
+                 "stress workload used by the benchmark scripts and CMake targets.\n"
+                 "Benchmark env knobs: SCOPE_TIMER_BENCH_SINK=DEFAULT|BUFFERED|ASYNC|NULL,\n"
+                 "SCOPE_TIMER_BENCH_SINK_BYTES=<1.." << options::MaxBenchmarkSinkBytes << ">,\n"
+                 "SCOPE_TIMER_BENCH_THREADS=<1.." << options::MaxBenchmarkThreads << ">,\n"
+                 "and SCOPE_TIMER_BENCH_TIMER=DEFAULT|HOTPATH.\n"
+                 "Harness probe: --instrumentation-status\n";
+}
+
+static bool instrumentationStatusRequested(int argc, char** argv) {
+    return argc == 2 && argv[1] != nullptr &&
+        std::string_view{argv[1]} == "--instrumentation-status";
+}
+
+static void printInstrumentationStatus() {
+#ifndef NDEBUG
+    std::cout << "ScopeTimerBenchmark protocol=1 instrumentation=enabled\n";
+#else
+    std::cout << "ScopeTimerBenchmark protocol=1 instrumentation=disabled\n";
+#endif
+}
+
+static bool helpRequested(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i] ? std::string_view{argv[i]} : std::string_view{};
+        if (arg == "-h" || arg == "--help") {
+            return true;
+        }
+    }
+    return false;
+}
+
 static BenchmarkOptions parseOptions(int argc, char** argv) {
     SCOPE_TIMER("Benchmark::parseOptions");
 
-    BenchmarkOptions options;
+    BenchmarkOptions parsedOptions;
+    bool iterationsSet = false;
+    bool scenarioSet = false;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: Benchmark [--iterations=N] [--scenario=hotpath-bench]\n"
-                         "The dedicated benchmark executable drives a CPU-bound ScopeTimer\n"
-                         "stress workload used by the benchmark scripts and CMake targets.\n"
-                         "Benchmark env knobs: SCOPE_TIMER_BENCH_SINK=BUFFERED|ASYNC|NULL,\n"
-                         "SCOPE_TIMER_BENCH_SINK_BYTES=<bytes>, SCOPE_TIMER_BENCH_THREADS=<n>,\n"
-                         "and SCOPE_TIMER_BENCH_TIMER=HOTPATH.\n";
-            std::exit(0);
+            continue;
         } else if (arg.rfind("--iterations=", 0) == 0) {
-            options.iterations = std::max(1, std::stoi(arg.substr(13)));
-        } else if (arg.rfind("--scenario=", 0) == 0) {
-            if (const std::string value = arg.substr(11); value != "hotpath-bench") {
-                std::cerr << "Unknown benchmark scenario: " << value << '\n';
-                std::exit(2);
+            if (iterationsSet) {
+                throw options::OptionError("iterations may only be specified once");
             }
-            options.scenario = BenchmarkScenario::HotPathBench;
+            parsedOptions.iterations = static_cast<int>(options::parseBoundedUnsigned(
+                std::string_view(arg).substr(13),
+                "iterations",
+                1U,
+                options::MaxBenchmarkIterations
+            ));
+            iterationsSet = true;
+        } else if (arg.rfind("--scenario=", 0) == 0) {
+            if (scenarioSet) {
+                throw options::OptionError("scenario may only be specified once");
+            }
+            if (const std::string value = arg.substr(11); value != "hotpath-bench") {
+                throw options::OptionError("unknown benchmark scenario '" + value + "'");
+            }
+            parsedOptions.scenario = BenchmarkScenario::HotPathBench;
+            scenarioSet = true;
+        } else if (!arg.empty() && arg.front() == '-') {
+            throw options::OptionError("unknown option '" + arg + "'");
         } else {
-            options.iterations = std::max(1, std::stoi(arg));
+            if (iterationsSet) {
+                throw options::OptionError("iterations may only be specified once");
+            }
+            parsedOptions.iterations = static_cast<int>(options::parseBoundedUnsigned(
+                arg,
+                "iterations",
+                1U,
+                options::MaxBenchmarkIterations
+            ));
+            iterationsSet = true;
         }
     }
-    return options;
+    return parsedOptions;
 }
 
 int main(int argc, char** argv) {
-    BenchSinkScope sinkScope;
-    SCOPE_TIMER("Benchmark::main");
-
-    const BenchmarkOptions options = parseOptions(argc, argv);
-
-    // Preserve the existing benchmark scaling behavior so historical results
-    // remain comparable when the dedicated executable replaces the old
-    // benchmark-only path inside Demo.cpp.
-    for (int i = 0; i < options.iterations; ++i) {
-        if (options.scenario == BenchmarkScenario::HotPathBench) {
-            hotPathBenchmark(options.iterations);
-        }
+    if (instrumentationStatusRequested(argc, argv)) {
+        printInstrumentationStatus();
+        return 0;
     }
-    return 0;
+    if (helpRequested(argc, argv)) {
+        printUsage();
+        return 0;
+    }
+
+    try {
+        const BenchmarkRuntimeOptions runtimeOptions = parseRuntimeOptions();
+        BenchSinkScope sinkScope(runtimeOptions);
+        {
+            SCOPE_TIMER("Benchmark::main");
+            const BenchmarkOptions parsedOptions = parseOptions(argc, argv);
+
+            // Preserve the existing benchmark scaling behavior so historical results
+            // remain comparable when the dedicated executable replaces the old
+            // benchmark-only path inside Demo.cpp.
+            for (int i = 0; i < parsedOptions.iterations; ++i) {
+                if (parsedOptions.scenario == BenchmarkScenario::HotPathBench) {
+                    hotPathBenchmark(parsedOptions.iterations, runtimeOptions);
+                }
+            }
+        }
+        return 0;
+    } catch (const options::OptionError& error) {
+        std::cerr << "Benchmark: " << error.what() << "\nTry 'Benchmark --help' for usage.\n";
+        return 2;
+    } catch (const std::exception& error) {
+        std::cerr << "Benchmark failed: " << error.what() << '\n';
+        return 1;
+    }
 }

@@ -23,45 +23,6 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# --- Prefer GCC by default (for coverage) --------------------------------
-# Set CC/CXX/GCOV before the project() call so CMake configures with GCC
-# unless the user has explicitly chosen something else.
-if(NOT DEFINED ENV{CC})
-  find_program(_GCC15 gcc-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
-  if(_GCC15)
-    set(ENV{CC} "${_GCC15}")
-  else()
-    find_program(_GCC gcc PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
-    if(_GCC)
-      set(ENV{CC} "${_GCC}")
-    endif()
-  endif()
-endif()
-if(NOT DEFINED ENV{CXX})
-  find_program(_GPP15 g++-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
-  if(_GPP15)
-    set(ENV{CXX} "${_GPP15}")
-  else()
-    find_program(_GPP g++ PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
-    if(_GPP)
-      set(ENV{CXX} "${_GPP}")
-    endif()
-  endif()
-endif()
-if(NOT DEFINED ENV{GCOV})
-  find_program(_GCOV15 gcov-15 PATHS /opt/homebrew/bin /usr/local/bin /usr/bin)
-  if(_GCOV15)
-    set(ENV{GCOV} "${_GCOV15}")
-  endif()
-endif()
-
-if(NOT CMAKE_C_COMPILER AND DEFINED ENV{CC})
-  set(CMAKE_C_COMPILER "$ENV{CC}" CACHE FILEPATH "C compiler" FORCE)
-endif()
-if(NOT CMAKE_CXX_COMPILER AND DEFINED ENV{CXX})
-  set(CMAKE_CXX_COMPILER "$ENV{CXX}" CACHE FILEPATH "C++ compiler" FORCE)
-endif()
-
 project(ScopeTimer LANGUAGES CXX)
 
 # --- Basics ---------------------------------------------------------------
@@ -70,6 +31,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile DB (used by Sonar via build-wrapper)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+include(CTest)
+find_package(Threads REQUIRED)
+
+# Header-only consumer target. Keep the namespaced alias available to vendored
+# CMake consumers without adding install/export packaging to this development
+# build.
+add_library(ScopeTimer INTERFACE)
+add_library(ScopeTimer::ScopeTimer ALIAS ScopeTimer)
+target_compile_features(ScopeTimer INTERFACE cxx_std_17)
+target_include_directories(ScopeTimer INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(ScopeTimer INTERFACE Threads::Threads)
 
 # --- Demo app -------------------------------------------------------------
 # Use example/Demo.cpp if present, else ./Demo.cpp.
@@ -82,7 +57,7 @@ else()
 endif()
 
 add_executable(Demo ${DEMO_SRC})
-target_include_directories(Demo PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(Demo PRIVATE ScopeTimer::ScopeTimer)
 
 # --- Benchmark app --------------------------------------------------------
 # Keep the dedicated benchmark workload separate from the educational demo.
@@ -95,25 +70,25 @@ else()
 endif()
 
 add_executable(Benchmark ${BENCHMARK_SRC})
-target_include_directories(Benchmark PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(Benchmark PRIVATE ScopeTimer::ScopeTimer)
 
 # --- Unit tests (optional) -------------------------------------------------
-set(TEST_TARGET "")
-if(EXISTS "${CMAKE_SOURCE_DIR}/test/ScopeTimerTest.cpp")
+set(TEST_TARGETS)
+if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/test/ScopeTimerTest.cpp")
   add_executable(scopetimer_tests test/ScopeTimerTest.cpp)
-  target_include_directories(scopetimer_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(scopetimer_tests PRIVATE ScopeTimer::ScopeTimer)
   target_compile_definitions(scopetimer_tests PRIVATE SCOPETIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(scopetimer_tests PRIVATE --coverage -O0 -g)
-    target_link_options(scopetimer_tests PRIVATE --coverage)
-  endif()
-  set(TEST_TARGET scopetimer_tests)
+  list(APPEND TEST_TARGETS scopetimer_tests)
+endif()
+
+if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/test/ScopeTimerReleaseCompileTest.cpp")
+  add_executable(scopetimer_release_compile_test test/ScopeTimerReleaseCompileTest.cpp)
+  target_link_libraries(scopetimer_release_compile_test PRIVATE ScopeTimer::ScopeTimer)
+  target_compile_definitions(scopetimer_release_compile_test PRIVATE NDEBUG)
+  list(APPEND TEST_TARGETS scopetimer_release_compile_test)
 endif()
 
 # --- CTest registration -----------------------------------------------------
-include(CTest)
-enable_testing()
-
 function(scopetimer_set_test_working_directory)
   set_tests_properties(${ARGN} PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 endfunction()
@@ -127,7 +102,7 @@ function(scopetimer_set_benchmark_test_env TEST_NAME TEST_ENV)
   )
 endfunction()
 
-if(TARGET Demo)
+if(BUILD_TESTING AND TARGET Demo)
   add_test(NAME run_demo COMMAND Demo)
   add_test(NAME run_demo_iterations COMMAND Demo --iterations=1)
   add_test(NAME run_demo_iterations_zero_flag COMMAND Demo --iterations=0)
@@ -142,13 +117,31 @@ if(TARGET Demo)
     run_demo_positional_zero
     run_demo_help
   )
+  set_tests_properties(
+    run_demo_iterations_zero_flag
+    run_demo_positional_zero
+    PROPERTIES WILL_FAIL TRUE
+  )
 endif()
 
-if(TARGET Benchmark)
+if(BUILD_TESTING AND TARGET Benchmark)
   add_test(NAME run_benchmark_default COMMAND Benchmark --iterations=1 --scenario=hotpath-bench)
   add_test(NAME run_benchmark_iterations_zero COMMAND Benchmark --iterations=0 --scenario=hotpath-bench)
   add_test(NAME run_benchmark_positional_zero COMMAND Benchmark 0)
   add_test(NAME run_benchmark_help COMMAND Benchmark --help)
+  if(NOT CMAKE_CONFIGURATION_TYPES AND
+     NOT CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+    add_test(
+      NAME run_benchmark_instrumentation_status
+      COMMAND Benchmark --instrumentation-status
+    )
+    set_tests_properties(
+      run_benchmark_instrumentation_status
+      PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        PASS_REGULAR_EXPRESSION "^ScopeTimerBenchmark protocol=1 instrumentation=enabled"
+    )
+  endif()
   add_test(NAME run_benchmark_invalid_scenario COMMAND Benchmark --scenario=bogus)
   add_test(NAME run_benchmark_buffered_hotpath COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_buffered_fast_alias COMMAND Benchmark --iterations=1)
@@ -173,14 +166,21 @@ if(TARGET Benchmark)
     run_benchmark_async_invalid_env
     run_benchmark_out_of_range_env
   )
-  set_tests_properties(run_benchmark_invalid_scenario PROPERTIES WILL_FAIL TRUE)
+  set_tests_properties(
+    run_benchmark_iterations_zero
+    run_benchmark_positional_zero
+    run_benchmark_invalid_scenario
+    run_benchmark_async_invalid_env
+    run_benchmark_out_of_range_env
+    PROPERTIES WILL_FAIL TRUE
+  )
   scopetimer_set_benchmark_test_env(
     run_benchmark_buffered_hotpath
     "SCOPE_TIMER_BENCH_SINK=BUFFERED;SCOPE_TIMER_BENCH_TIMER=HOTPATH;SCOPE_TIMER_BENCH_THREADS=2"
   )
   scopetimer_set_benchmark_test_env(
     run_benchmark_buffered_fast_alias
-    "SCOPE_TIMER_BENCH_SINK=buffered;SCOPE_TIMER_BENCH_TIMER=fast;SCOPE_TIMER_BENCH_THREADS=0;SCOPE_TIMER_BENCH_SINK_BYTES=0"
+    "SCOPE_TIMER_BENCH_SINK=buffered;SCOPE_TIMER_BENCH_TIMER=fast;SCOPE_TIMER_BENCH_THREADS=1;SCOPE_TIMER_BENCH_SINK_BYTES=1"
   )
   scopetimer_set_benchmark_test_env(
     run_benchmark_async
@@ -213,6 +213,14 @@ if(TARGET scopetimer_tests)
   set_tests_properties(run_scopetimer_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 endif()
 
+if(TARGET scopetimer_release_compile_test)
+  add_test(NAME run_scopetimer_release_compile_test COMMAND scopetimer_release_compile_test)
+  set_tests_properties(
+    run_scopetimer_release_compile_test
+    PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+  )
+endif()
+
 find_program(LEAKS_EXECUTABLE NAMES leaks)
 find_program(VALGRIND_EXECUTABLE NAMES valgrind)
 
@@ -239,9 +247,6 @@ if(TARGET scopetimer_tests)
               # instrumentation makes those thresholds meaningless.
               SCOPETIMER_PERF_MODE=SKIP
               ${VALGRIND_EXECUTABLE}
-              # The test suite intentionally stress-tests threading with 1000
-              # workers, which exceeds Valgrind's default 500-thread limit.
-              --max-threads=2000
               --leak-check=full
               --show-leak-kinds=all
               --errors-for-leak-kinds=definite,indirect
@@ -281,8 +286,16 @@ endif()
 # Reproduces the dedicated benchmark-app enabled-vs-disabled ScopeTimer measurement
 # in a dedicated non-coverage build tree so gcov instrumentation does not skew
 # the results.
-set(DEMO_BENCH_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-bench" CACHE PATH
-    "Dedicated build directory used by the benchmark target")
+set(_SCOPETIMER_LEGACY_BENCH_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-bench")
+set(_SCOPETIMER_DEFAULT_BENCH_BUILD_DIR "${CMAKE_BINARY_DIR}/benchmark-build")
+if(NOT DEFINED DEMO_BENCH_BUILD_DIR
+   OR "${DEMO_BENCH_BUILD_DIR}" STREQUAL "${_SCOPETIMER_LEGACY_BENCH_BUILD_DIR}")
+  set(DEMO_BENCH_BUILD_DIR "${_SCOPETIMER_DEFAULT_BENCH_BUILD_DIR}" CACHE PATH
+      "Dedicated build directory used by the benchmark target" FORCE)
+else()
+  set(DEMO_BENCH_BUILD_DIR "${DEMO_BENCH_BUILD_DIR}" CACHE PATH
+      "Dedicated build directory used by the benchmark target")
+endif()
 set(DEMO_BENCH_ITERATIONS "5" CACHE STRING
     "Number of Benchmark iterations per benchmark run")
 set(DEMO_BENCH_RUNS "8" CACHE STRING
@@ -294,13 +307,8 @@ elseif(MSVC)
 else()
   set(_DEMO_BENCH_DEFAULT_CXX_FLAGS "-O3")
 endif()
-if(NOT DEFINED DEMO_BENCH_CXX_FLAGS OR DEMO_BENCH_CXX_FLAGS STREQUAL "-O2")
-  set(DEMO_BENCH_CXX_FLAGS "${_DEMO_BENCH_DEFAULT_CXX_FLAGS}" CACHE STRING
-      "Optimization flags used by the dedicated benchmark build without defining NDEBUG" FORCE)
-else()
-  set(DEMO_BENCH_CXX_FLAGS "${DEMO_BENCH_CXX_FLAGS}" CACHE STRING
-      "Optimization flags used by the dedicated benchmark build without defining NDEBUG")
-endif()
+set(DEMO_BENCH_CXX_FLAGS "${_DEMO_BENCH_DEFAULT_CXX_FLAGS}" CACHE STRING
+    "Optimization flags used by the dedicated benchmark build without defining NDEBUG")
 set(DEMO_BENCH_THREADS "4" CACHE STRING
     "Worker thread count used by the benchmark matrix target")
 set(DEMO_BENCH_SINK_BYTES "4096" CACHE STRING
@@ -313,12 +321,40 @@ set(SCOPETIMER_HEADER_COVERAGE_BUILD_DIR "${CMAKE_BINARY_DIR}/scopetimer-header-
     "Directory used by the ScopeTimer.hpp header coverage target")
 set(SCOPETIMER_HEADER_COVERAGE_THRESHOLD "80" CACHE STRING
     "Minimum ScopeTimer.hpp line coverage percentage enforced by the header coverage target")
-set(DOCS_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-docs" CACHE PATH
-    "Dedicated build directory used by the automatic markdown refresh target")
-option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md and TESTS.md during the default build" ON)
+set(DOCS_BUILD_DIR "${CMAKE_BINARY_DIR}/docs-refresh")
+option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md and TESTS.md during the default build" OFF)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 
 if(Python3_Interpreter_FOUND)
+  if(BUILD_TESTING)
+    add_test(
+      NAME run_benchmark_tool_tests
+      COMMAND ${Python3_EXECUTABLE} -m unittest discover -s scripts/tests -v
+    )
+    set_tests_properties(
+      run_benchmark_tool_tests
+      PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+      NAME run_refresh_docs_tests
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/RefreshDocsTest.py
+    )
+    set_tests_properties(
+      run_refresh_docs_tests
+      PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+      NAME run_sonar_branch_guard_tests
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/SonarBranchGuardTest.py
+    )
+    set_tests_properties(
+      run_sonar_branch_guard_tests
+      PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+  endif()
+
   function(scopetimer_add_docs_refresh_target)
     set(target_options)
     if(AUTO_REFRESH_DOCS)
@@ -328,6 +364,8 @@ if(Python3_Interpreter_FOUND)
       COMMENT "Regenerate BUILD.md and TESTS.md from live build artifacts"
       COMMAND ${Python3_EXECUTABLE}
               ${CMAKE_SOURCE_DIR}/scripts/refresh_docs.py
+              --repo-root ${CMAKE_SOURCE_DIR}
+              --managed-root ${CMAKE_BINARY_DIR}
               --docs-build-dir ${DOCS_BUILD_DIR}
               --build-doc ${CMAKE_SOURCE_DIR}/BUILD.md
               --tests-doc ${CMAKE_SOURCE_DIR}/TESTS.md
@@ -353,6 +391,9 @@ if(Python3_Interpreter_FOUND)
             -DENABLE_COVERAGE=OFF
             -DENABLE_SONAR=OFF
             -DAUTO_REFRESH_DOCS=OFF
+            -DBUILD_TESTING=OFF
+            -DCMAKE_BUILD_TYPE:STRING=
+            -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
             -DCMAKE_CXX_FLAGS=${DEMO_BENCH_CXX_FLAGS}
     COMMAND ${CMAKE_COMMAND} --build ${DEMO_BENCH_BUILD_DIR} --target Benchmark -j
     COMMAND ${Python3_EXECUTABLE}
@@ -372,6 +413,9 @@ if(Python3_Interpreter_FOUND)
             -DENABLE_COVERAGE=OFF
             -DENABLE_SONAR=OFF
             -DAUTO_REFRESH_DOCS=OFF
+            -DBUILD_TESTING=OFF
+            -DCMAKE_BUILD_TYPE:STRING=
+            -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
             -DCMAKE_CXX_FLAGS=${DEMO_BENCH_CXX_FLAGS}
     COMMAND ${CMAKE_COMMAND} --build ${DEMO_BENCH_BUILD_DIR} --target Benchmark -j
     COMMAND ${Python3_EXECUTABLE}
@@ -430,16 +474,9 @@ else()
   endif()
 endif()
 
-# Link threads if available (portable)
-find_package(Threads)
-if(Threads_FOUND)
-  target_link_libraries(Demo PRIVATE Threads::Threads)
-  target_link_libraries(Benchmark PRIVATE Threads::Threads)
-endif()
-
 # --- Coverage (GCC + gcovr) ----------------------------------------------
 # Keep it minimal: GCC only. Generate SonarQube XML + HTML (viewable locally).
-option(ENABLE_COVERAGE "Enable GCC gcov coverage flags for Demo" ON)
+option(ENABLE_COVERAGE "Enable GCC gcov coverage flags" OFF)
 find_program(GCOVR_EXECUTABLE NAMES gcovr)
 if(ENABLE_COVERAGE)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -507,7 +544,7 @@ set(COVERAGE_EXCLUDE_ARGS
 )
 
 if(COVERAGE_READY)
-  add_custom_target(coverage DEPENDS Demo Benchmark ${TEST_TARGET}
+  add_custom_target(coverage DEPENDS Demo Benchmark ${TEST_TARGETS}
     COMMENT "Run tests once and generate gcovr reports (SonarQube XML + HTML)"
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_BINARY_DIR}/coverage
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
@@ -551,114 +588,44 @@ endif()
 # compile_commands.json into ${CMAKE_BINARY_DIR}/bw-output/.
 option(ENABLE_SONAR "Enable Sonar build-wrapper and scanner targets" OFF)
 set(SONAR_BW_OUT ${CMAKE_BINARY_DIR}/bw-output CACHE PATH "build-wrapper output directory")
-# Optional explicit override to the executable; if empty we auto-detect / auto-install.
-set(SONAR_BUILD_WRAPPER "" CACHE FILEPATH "Path to build-wrapper executable (optional; auto-detect if empty)")
+set(SONAR_BUILD_WRAPPER "" CACHE FILEPATH "Path to an installed build-wrapper executable")
+set(SONAR_SCANNER_EXECUTABLE "" CACHE FILEPATH "Path to an installed sonar-scanner executable")
 
-# Where we place downloaded tools if missing
-set(SONAR_TOOLS_DIR ${CMAKE_BINARY_DIR}/tools)
-
-function(_detect_or_install_build_wrapper OUT_VAR)
-  # 1) explicit cache var wins
+function(scopetimer_find_build_wrapper OUT_VAR)
   if(SONAR_BUILD_WRAPPER)
-    if(EXISTS "${SONAR_BUILD_WRAPPER}")
+    if(EXISTS "${SONAR_BUILD_WRAPPER}" AND NOT IS_DIRECTORY "${SONAR_BUILD_WRAPPER}")
       set(${OUT_VAR} "${SONAR_BUILD_WRAPPER}" PARENT_SCOPE)
-      return()
+    else()
+      message(WARNING "Configured SONAR_BUILD_WRAPPER does not name a file: ${SONAR_BUILD_WRAPPER}")
     endif()
-  endif()
-  # 2) environment overrides
-  if(DEFINED ENV{SONAR_BUILD_WRAPPER} AND EXISTS "$ENV{SONAR_BUILD_WRAPPER}")
-    set(${OUT_VAR} "$ENV{SONAR_BUILD_WRAPPER}" PARENT_SCOPE)
     return()
   endif()
-  # 3) search PATH
+
+  if(DEFINED ENV{SONAR_BUILD_WRAPPER} AND NOT "$ENV{SONAR_BUILD_WRAPPER}" STREQUAL "")
+    if(EXISTS "$ENV{SONAR_BUILD_WRAPPER}" AND NOT IS_DIRECTORY "$ENV{SONAR_BUILD_WRAPPER}")
+      set(${OUT_VAR} "$ENV{SONAR_BUILD_WRAPPER}" PARENT_SCOPE)
+    else()
+      message(WARNING "SONAR_BUILD_WRAPPER does not name a file: $ENV{SONAR_BUILD_WRAPPER}")
+    endif()
+    return()
+  endif()
+
   if(APPLE)
-    find_program(_BW_EXE NAMES build-wrapper-macosx-arm64 build-wrapper-macosx-x86)
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+      find_program(_BW_EXE NAMES build-wrapper-macosx-arm64)
+    else()
+      find_program(_BW_EXE NAMES build-wrapper-macosx-x86)
+    endif()
   elseif(WIN32)
     find_program(_BW_EXE NAMES build-wrapper-win-x86-64.exe)
   else()
     find_program(_BW_EXE NAMES build-wrapper-linux-x86-64)
   endif()
-  if(_BW_EXE)
-    set(${OUT_VAR} "${_BW_EXE}" PARENT_SCOPE)
-    return()
-  endif()
-
-  # 4) Not found: download + install locally under ${SONAR_TOOLS_DIR}
-  file(MAKE_DIRECTORY "${SONAR_TOOLS_DIR}")
-  if(APPLE)
-    # Prefer arm64 if available; fall back to x86 (Rosetta). Some setups only have x86.
-    set(_BW_ZIP_URL "https://sonarcloud.io/static/cpp/build-wrapper-macosx-arm64.zip")
-    set(_BW_DIR "${SONAR_TOOLS_DIR}/build-wrapper-macosx-arm64")
-    set(_BW_EXE_PATH "${_BW_DIR}/build-wrapper-macosx-arm64")
-    # We'll attempt arm64 first; if download fails, try x86
-    set(_BW_FALLBACK_URL "https://sonarcloud.io/static/cpp/build-wrapper-macosx-x86.zip")
-    set(_BW_FALLBACK_DIR "${SONAR_TOOLS_DIR}/build-wrapper-macosx-x86")
-    set(_BW_FALLBACK_EXE "${_BW_FALLBACK_DIR}/build-wrapper-macosx-x86")
-  elseif(WIN32)
-    set(_BW_ZIP_URL "https://sonarcloud.io/static/cpp/build-wrapper-win-x86.zip")
-    set(_BW_DIR "${SONAR_TOOLS_DIR}/build-wrapper-win-x86")
-    set(_BW_EXE_PATH "${_BW_DIR}/build-wrapper-win-x86-64.exe")
-  else()
-    set(_BW_ZIP_URL "https://sonarcloud.io/static/cpp/build-wrapper-linux-x86-64.zip")
-    set(_BW_DIR "${SONAR_TOOLS_DIR}/build-wrapper-linux-x86-64")
-    set(_BW_EXE_PATH "${_BW_DIR}/build-wrapper-linux-x86-64")
-  endif()
-
-  set(_BW_ZIP_FILE "${SONAR_TOOLS_DIR}/build-wrapper.zip")
-  message(STATUS "Downloading Sonar build-wrapper from: ${_BW_ZIP_URL}")
-  file(DOWNLOAD "${_BW_ZIP_URL}" "${_BW_ZIP_FILE}" STATUS _dl_stat)
-  list(GET _dl_stat 0 _dl_code)
-  if(NOT _dl_code EQUAL 0)
-    if(APPLE)
-      message(STATUS "Arm64 build-wrapper download failed; trying x86 fallback: ${_BW_FALLBACK_URL}")
-      file(DOWNLOAD "${_BW_FALLBACK_URL}" "${_BW_ZIP_FILE}" STATUS _dl_stat2)
-      list(GET _dl_stat2 0 _dl_code2)
-      if(NOT _dl_code2 EQUAL 0)
-        message(WARNING "Failed to download build-wrapper (arm64 & x86). Configure SONAR_BUILD_WRAPPER manually.")
-        set(${OUT_VAR} "" PARENT_SCOPE)
-        return()
-      endif()
-      set(_BW_DIR "${_BW_FALLBACK_DIR}")
-      set(_BW_EXE_PATH "${_BW_FALLBACK_EXE}")
-    else()
-      message(WARNING "Failed to download build-wrapper. Configure SONAR_BUILD_WRAPPER manually.")
-      set(${OUT_VAR} "" PARENT_SCOPE)
-      return()
-    endif()
-  endif()
-
-  # Extract zip
-  file(MAKE_DIRECTORY "${_BW_DIR}")
-  execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${_BW_ZIP_FILE}"
-                  WORKING_DIRECTORY "${SONAR_TOOLS_DIR}"
-                  RESULT_VARIABLE _unzip_res)
-  if(NOT _unzip_res EQUAL 0)
-    message(WARNING "Failed to extract build-wrapper archive at ${_BW_ZIP_FILE}.")
-    set(${OUT_VAR} "" PARENT_SCOPE)
-    return()
-  endif()
-
-  if(NOT EXISTS "${_BW_EXE_PATH}")
-    # Windows archives sometimes extract into a nested folder; try to glob for the exe
-    if(WIN32)
-      file(GLOB_RECURSE _BW_WIN_EXE "${_BW_DIR}/build-wrapper-win-x86-64.exe")
-      if(_BW_WIN_EXE)
-        list(GET _BW_WIN_EXE 0 _BW_EXE_PATH)
-      endif()
-    endif()
-  endif()
-
-  if(EXISTS "${_BW_EXE_PATH}")
-    message(STATUS "Installed build-wrapper locally: ${_BW_EXE_PATH}")
-    set(${OUT_VAR} "${_BW_EXE_PATH}" PARENT_SCOPE)
-  else()
-    message(WARNING "build-wrapper executable not found after extraction: ${_BW_EXE_PATH}")
-    set(${OUT_VAR} "" PARENT_SCOPE)
-  endif()
+  set(${OUT_VAR} "${_BW_EXE}" PARENT_SCOPE)
 endfunction()
 
 if(ENABLE_SONAR)
-  _detect_or_install_build_wrapper(SONAR_BUILD_WRAPPER_EXE)
+  scopetimer_find_build_wrapper(SONAR_BUILD_WRAPPER_EXE)
   if(SONAR_BUILD_WRAPPER_EXE)
     message(STATUS "Using Sonar build-wrapper: ${SONAR_BUILD_WRAPPER_EXE}")
     add_custom_target(sonar_bw
@@ -675,10 +642,10 @@ if(ENABLE_SONAR)
     )
   else()
 
-    message(STATUS "Sonar build-wrapper not available (download failed). 'sonar_bw' will print a helpful error.")
+    message(STATUS "Sonar build-wrapper is not installed. 'sonar_bw' will print a helpful error.")
     add_custom_target(sonar_bw
-      COMMENT "ERROR: Sonar build-wrapper missing — set SONAR_BUILD_WRAPPER to skip auto-download and use a custom path"
-      COMMAND ${CMAKE_COMMAND} -E echo "[sonar_bw] ERROR: Sonar build-wrapper not found."
+      COMMENT "ERROR: Sonar build-wrapper missing — install it or set SONAR_BUILD_WRAPPER"
+      COMMAND ${CMAKE_COMMAND} -E echo "[sonar_bw] ERROR: install Sonar build-wrapper or set SONAR_BUILD_WRAPPER to its executable."
       COMMAND ${CMAKE_COMMAND} -E false
       VERBATIM
     )
@@ -696,110 +663,99 @@ endif()
 # Runs sonar-scanner using sonar-project.properties at repo root.
 # Depends on coverage and sonar_bw so the active build directory always
 # provides the compile database and SonarQube coverage report.
-function(_detect_or_install_scanner OUT_VAR)
-  # 0) Prefer an installed scanner already on PATH
+function(scopetimer_find_scanner OUT_VAR)
+  if(SONAR_SCANNER_EXECUTABLE)
+    if(EXISTS "${SONAR_SCANNER_EXECUTABLE}" AND NOT IS_DIRECTORY "${SONAR_SCANNER_EXECUTABLE}")
+      set(${OUT_VAR} "${SONAR_SCANNER_EXECUTABLE}" PARENT_SCOPE)
+    else()
+      message(WARNING "Configured SONAR_SCANNER_EXECUTABLE does not name a file: ${SONAR_SCANNER_EXECUTABLE}")
+    endif()
+    return()
+  endif()
+
+  if(DEFINED ENV{SONAR_SCANNER_EXECUTABLE} AND NOT "$ENV{SONAR_SCANNER_EXECUTABLE}" STREQUAL "")
+    if(EXISTS "$ENV{SONAR_SCANNER_EXECUTABLE}" AND NOT IS_DIRECTORY "$ENV{SONAR_SCANNER_EXECUTABLE}")
+      set(${OUT_VAR} "$ENV{SONAR_SCANNER_EXECUTABLE}" PARENT_SCOPE)
+    else()
+      message(WARNING "SONAR_SCANNER_EXECUTABLE does not name a file: $ENV{SONAR_SCANNER_EXECUTABLE}")
+    endif()
+    return()
+  endif()
+
   find_program(_SC_EXE NAMES sonar-scanner sonar-scanner.bat)
-  if(_SC_EXE)
-    set(${OUT_VAR} "${_SC_EXE}" PARENT_SCOPE)
+  set(${OUT_VAR} "${_SC_EXE}" PARENT_SCOPE)
+endfunction()
+
+function(scopetimer_current_branch OUT_VAR)
+  if(DEFINED ENV{GITHUB_REF_NAME} AND NOT "$ENV{GITHUB_REF_NAME}" STREQUAL "")
+    set(${OUT_VAR} "$ENV{GITHUB_REF_NAME}" PARENT_SCOPE)
     return()
   endif()
 
-  # 1) Candidate URLs as provided (fixed version 7.2.0.5079)
-  set(_URL_LINUX_AARCH64  "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-linux-aarch64.zip")
-  set(_URL_LINUX_X64      "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-linux-x64.zip")
-  set(_URL_MAC_AARCH64    "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-macosx-aarch64.zip")
-  set(_URL_MAC_X64        "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-macosx-x64.zip")
-  set(_URL_WIN_X64        "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-windows-x64.zip")
-
-  # 2) Select best candidates by platform/arch, with sensible fallbacks
-  set(_SC_URLS)
-  if(WIN32)
-    list(APPEND _SC_URLS ${_URL_WIN_X64})
-  elseif(APPLE)
-    # Detect Apple Silicon vs Intel
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
-      list(APPEND _SC_URLS ${_URL_MAC_AARCH64} ${_URL_MAC_X64})
-    else()
-      list(APPEND _SC_URLS ${_URL_MAC_X64} ${_URL_MAC_AARCH64})
-    endif()
-  else() # Linux/Unix
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
-      list(APPEND _SC_URLS ${_URL_LINUX_AARCH64} ${_URL_LINUX_X64})
-    else()
-      list(APPEND _SC_URLS ${_URL_LINUX_X64} ${_URL_LINUX_AARCH64})
-    endif()
-  endif()
-
-  # 3) Download first working archive
-  set(SONAR_TOOLS_DIR ${CMAKE_BINARY_DIR}/tools)
-  file(MAKE_DIRECTORY "${SONAR_TOOLS_DIR}")
-  set(_SC_ZIP_FILE "${SONAR_TOOLS_DIR}/sonar-scanner.zip")
-  set(_DOWNLOADED_ZIP "")
-  foreach(_URL IN LISTS _SC_URLS)
-    message(STATUS "Attempting to download sonar-scanner from: ${_URL}")
-    file(DOWNLOAD "${_URL}" "${_SC_ZIP_FILE}" STATUS _sc_dl TLS_VERIFY ON)
-    list(GET _sc_dl 0 _sc_code)
-    if(_sc_code EQUAL 0)
-      set(_DOWNLOADED_ZIP "${_SC_ZIP_FILE}")
-      set(_SC_URL_USED "${_URL}")
-      break()
-    endif()
-  endforeach()
-
-  if(NOT _DOWNLOADED_ZIP)
-    message(WARNING "Failed to download sonar-scanner for this platform. Install sonar-scanner in PATH or set SONAR_SCANNER_EXECUTABLE manually.")
+  find_program(_GIT_EXE NAMES git)
+  if(NOT _GIT_EXE)
     set(${OUT_VAR} "" PARENT_SCOPE)
     return()
   endif()
 
-  # 4) Extract the archive to tools dir
-  execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${_DOWNLOADED_ZIP}"
-                  WORKING_DIRECTORY "${SONAR_TOOLS_DIR}"
-                  RESULT_VARIABLE _sc_unzip)
-  if(NOT _sc_unzip EQUAL 0)
-    message(WARNING "Failed to extract sonar-scanner archive at ${_DOWNLOADED_ZIP}")
-    set(${OUT_VAR} "" PARENT_SCOPE)
-    return()
-  endif()
-
-  # 5) Locate the scanner binary (handles both *nix and Windows layouts)
-  file(GLOB_RECURSE _SC_BIN_CAND
-       "${SONAR_TOOLS_DIR}/sonar-scanner*/bin/sonar-scanner"
-       "${SONAR_TOOLS_DIR}/sonar-scanner*/bin/sonar-scanner.bat")
-  if(_SC_BIN_CAND)
-    list(GET _SC_BIN_CAND 0 _SC_EXE_FOUND)
-    message(STATUS "Installed sonar-scanner locally from ${_SC_URL_USED}: ${_SC_EXE_FOUND}")
-    set(${OUT_VAR} "${_SC_EXE_FOUND}" PARENT_SCOPE)
+  execute_process(
+    COMMAND ${_GIT_EXE} rev-parse --abbrev-ref HEAD
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    RESULT_VARIABLE _git_result
+    OUTPUT_VARIABLE _git_branch
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(_git_result EQUAL 0 AND NOT _git_branch STREQUAL "HEAD")
+    set(${OUT_VAR} "${_git_branch}" PARENT_SCOPE)
   else()
-    message(WARNING "sonar-scanner executable not found after extraction in ${SONAR_TOOLS_DIR}")
     set(${OUT_VAR} "" PARENT_SCOPE)
   endif()
 endfunction()
 
-set(_scan_deps coverage)
-if(TARGET sonar_bw)
-  list(APPEND _scan_deps sonar_bw)
-endif()
-
 if(ENABLE_SONAR)
-  _detect_or_install_scanner(SONAR_SCANNER_EXECUTABLE)
-  if(SONAR_SCANNER_EXECUTABLE)
+  scopetimer_current_branch(SONAR_BRANCH)
+  if(NOT SONAR_BRANCH STREQUAL "main")
+    if(SONAR_BRANCH)
+      set(_SONAR_BRANCH_DETAIL "current branch is '${SONAR_BRANCH}'")
+    else()
+      set(_SONAR_BRANCH_DETAIL "the current branch could not be identified")
+    endif()
+    add_custom_target(sonar_scan
+      COMMENT "ERROR: Sonar scanning is restricted to the main branch"
+      COMMAND ${CMAKE_COMMAND}
+              -DSCOPETIMER_SOURCE_DIR:PATH=${CMAKE_SOURCE_DIR}
+              -P ${CMAKE_SOURCE_DIR}/cmake/RequireSonarMainBranch.cmake
+      COMMAND ${CMAKE_COMMAND} -E echo "[sonar_scan] ERROR: ${_SONAR_BRANCH_DETAIL}; free-tier analysis is main-only."
+      COMMAND ${CMAKE_COMMAND} -E false
+      VERBATIM
+    )
+  else()
+    scopetimer_find_scanner(SONAR_SCANNER_EXE)
+  endif()
+  if(SONAR_BRANCH STREQUAL "main" AND SONAR_SCANNER_EXE)
     add_custom_target(sonar_scan
       COMMENT "Run sonar build-wrapper, generate coverage, then run sonar-scanner"
+      COMMAND ${CMAKE_COMMAND}
+              -DSCOPETIMER_SOURCE_DIR:PATH=${CMAKE_SOURCE_DIR}
+              -P ${CMAKE_SOURCE_DIR}/cmake/RequireSonarMainBranch.cmake
       COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target sonar_bw
       COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target coverage
-      COMMAND ${SONAR_SCANNER_EXECUTABLE}
+      COMMAND ${SONAR_SCANNER_EXE}
               --define sonar.projectBaseDir=${CMAKE_SOURCE_DIR}
               --define sonar.cfamily.compile-commands=${SONAR_BW_OUT}/compile_commands.json
               --define sonar.coverageReportPaths=${CMAKE_BINARY_DIR}/sonarqube-coverage.xml
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       VERBATIM
     )
-  else()
-    message(STATUS "sonar-scanner not available (download failed). 'sonar_scan' will print a helpful error.")
+  elseif(SONAR_BRANCH STREQUAL "main")
+    message(STATUS "sonar-scanner is not installed. 'sonar_scan' will print a helpful error.")
     add_custom_target(sonar_scan
-      COMMENT "ERROR: sonar-scanner missing — install it or set PATH"
-      COMMAND ${CMAKE_COMMAND} -E echo "[sonar_scan] ERROR: sonar-scanner not found."
+      COMMENT "ERROR: sonar-scanner missing — install it or set SONAR_SCANNER_EXECUTABLE"
+      COMMAND ${CMAKE_COMMAND}
+              -DSCOPETIMER_SOURCE_DIR:PATH=${CMAKE_SOURCE_DIR}
+              -P ${CMAKE_SOURCE_DIR}/cmake/RequireSonarMainBranch.cmake
+      COMMAND ${CMAKE_COMMAND} -E echo "[sonar_scan] ERROR: install sonar-scanner or set SONAR_SCANNER_EXECUTABLE to its executable."
       COMMAND ${CMAKE_COMMAND} -E false
       VERBATIM
     )

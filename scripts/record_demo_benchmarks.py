@@ -11,6 +11,7 @@ state checked in to main.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -18,6 +19,8 @@ import plistlib
 import shlex
 import shutil
 import subprocess
+import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,8 +33,9 @@ NOISE_TOLERANCE_PCT = 2.0
 SINK_BYTES_PLACEHOLDER = "{sink_bytes}"
 THREADS_PLACEHOLDER = "{threads}"
 ASYNC_SINK_BYTES = "65536"
+COMPARISON_FINGERPRINT_VERSION = 1
 DEFAULT_REPORT_CONFIG: dict[str, Any] = {
-    "binary": "./build-bench/Benchmark",
+    "binary": "./build-review/benchmark-build/Benchmark",
     "scenario": "hotpath-bench",
     "iterations": 5,
     "runs": 8,
@@ -115,9 +119,9 @@ PROFILE_DEFS: list[dict[str, Any]] = [
         "name": "hotpath_async_threaded",
         "label": "Hot-path timer, async sink",
         "description": (
-            "Lowest-overhead profile: hot-path timer format plus the async sink, "
-            "measured under the threaded stress workload with a 64 KiB async "
-            "handoff size."
+            "Low-overhead output-producing profile: hot-path timer format plus "
+            "the async sink, measured under the threaded stress workload with a "
+            "64 KiB async handoff size."
         ),
         "env": {
             "SCOPE_TIMER_BENCH_SINK": "ASYNC",
@@ -143,6 +147,21 @@ PROFILE_DEFS: list[dict[str, Any]] = [
 ]
 
 
+@dataclass(frozen=True)
+class MatrixConfig:
+    binary: Path | None
+    scenario: str
+    iterations: int
+    runs: int
+    threads: int
+    sink_bytes: int
+    history_path: Path
+    report_path: Path
+    build_dir: Path
+    cxx_flags: str
+    refresh_report_only: bool
+
+
 def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parent.parent
 
@@ -165,8 +184,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--build-dir",
-        default="build-bench",
-        help="Benchmark build directory description saved into the history entry",
+        help=(
+            "Benchmark CMake build directory used for toolchain metadata "
+            "(defaults to the benchmark binary's parent directory)"
+        ),
     )
     parser.add_argument(
         "--cxx-flags",
@@ -181,28 +202,86 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_git(args: list[str], repo_root: Path) -> str:
-    completed = subprocess.run(
-        ["git", *args],
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
+def normalize_args(args: argparse.Namespace, repo_root: Path) -> MatrixConfig:
+    if args.scenario != "hotpath-bench":
+        raise benchmark_demo.BenchmarkConfigurationError(
+            f"unsupported benchmark scenario {args.scenario!r}; expected 'hotpath-bench'"
+        )
+
+    binary = Path(args.binary).expanduser() if args.binary else None
+    if binary is not None:
+        if not binary.is_absolute():
+            binary = repo_root / binary
+        binary = binary.resolve()
+    if not args.refresh_report_only and binary is None:
+        raise benchmark_demo.BenchmarkConfigurationError(
+            "--binary is required unless --refresh-report-only is used"
+        )
+
+    if args.build_dir:
+        build_dir = Path(args.build_dir).expanduser()
+    elif binary is not None:
+        build_dir = binary.parent
+    else:
+        build_dir = repo_root / "build-review" / "benchmark-build"
+    if not build_dir.is_absolute():
+        build_dir = repo_root / build_dir
+
+    return MatrixConfig(
+        binary=binary,
+        scenario=args.scenario,
+        iterations=benchmark_demo.bounded_positive(
+            args.iterations,
+            "iterations",
+            benchmark_demo.MAX_ITERATIONS,
+        ),
+        runs=benchmark_demo.bounded_positive(args.runs, "runs", benchmark_demo.MAX_RUNS),
+        threads=benchmark_demo.bounded_positive(
+            args.threads,
+            "threads",
+            benchmark_demo.MAX_BENCHMARK_THREADS,
+        ),
+        sink_bytes=benchmark_demo.bounded_positive(
+            args.sink_bytes,
+            "sink-bytes",
+            benchmark_demo.MAX_BENCHMARK_SINK_BYTES,
+        ),
+        history_path=Path(args.history_file).expanduser(),
+        report_path=Path(args.report_file).expanduser(),
+        build_dir=build_dir,
+        cxx_flags=str(args.cxx_flags),
+        refresh_report_only=bool(args.refresh_report_only),
     )
+
+
+def run_git(args: list[str], repo_root: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
     if completed.returncode != 0:
         return ""
     return completed.stdout.strip()
 
 
 def run_command(args: list[str]) -> str:
-    completed = subprocess.run(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
     if completed.returncode != 0:
         return ""
     return completed.stdout.strip()
@@ -222,7 +301,6 @@ def human_bytes(value: int | None) -> str:
         return "n/a"
     units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
     amount = float(value)
-    unit = units[0]
     for unit in units:
         if abs(amount) < 1024.0 or unit == units[-1]:
             break
@@ -246,7 +324,7 @@ def total_memory_bytes() -> int | None:
         try:
             pages = os.sysconf("SC_PHYS_PAGES")
             page_size = os.sysconf("SC_PAGE_SIZE")
-        except (OSError, ValueError):
+        except (OSError, TypeError, ValueError):
             return None
         if isinstance(pages, int) and isinstance(page_size, int):
             return pages * page_size
@@ -257,18 +335,21 @@ def diskutil_metadata(mount_point: str | None) -> dict[str, Any]:
     if platform.system() != "Darwin" or not mount_point:
         return {}
 
-    completed = subprocess.run(
-        ["diskutil", "info", "-plist", mount_point],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["diskutil", "info", "-plist", mount_point],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError:
+        return {}
     if completed.returncode != 0 or not completed.stdout:
         return {}
 
     try:
         raw = plistlib.loads(completed.stdout)
-    except (plistlib.InvalidFileException, ValueError):
+    except ValueError:
         return {}
 
     selected_keys = {
@@ -295,17 +376,21 @@ def diskutil_metadata(mount_point: str | None) -> dict[str, Any]:
 
 def filesystem_metadata(path: Path) -> dict[str, Any]:
     metadata: dict[str, Any] = {"path": str(path)}
-    usage = shutil.disk_usage(path)
-    metadata.update(
-        {
-            "total_bytes": usage.total,
-            "used_bytes": usage.used,
-            "free_bytes": usage.free,
-            "total": human_bytes(usage.total),
-            "used": human_bytes(usage.used),
-            "free": human_bytes(usage.free),
-        }
-    )
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        usage = None
+    if usage is not None:
+        metadata.update(
+            {
+                "total_bytes": usage.total,
+                "used_bytes": usage.used,
+                "free_bytes": usage.free,
+                "total": human_bytes(usage.total),
+                "used": human_bytes(usage.used),
+                "free": human_bytes(usage.free),
+            }
+        )
 
     df_output = run_command(["df", "-kP", str(path)])
     lines = df_output.splitlines()
@@ -356,6 +441,148 @@ def machine_metadata(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def read_cmake_cache(build_dir: Path) -> dict[str, str]:
+    cache_path = build_dir / "CMakeCache.txt"
+    try:
+        lines = cache_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+
+    cache: dict[str, str] = {}
+    for line in lines:
+        if not line or line.startswith(("#", "//")) or "=" not in line:
+            continue
+        key_and_type, value = line.split("=", 1)
+        key = key_and_type.split(":", 1)[0]
+        cache[key] = value
+    return cache
+
+
+def sha256_file(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def toolchain_metadata(build_dir: Path, binary: Path, configured_cxx_flags: str) -> dict[str, Any]:
+    cache = read_cmake_cache(build_dir)
+    compiler_path = cache.get("CMAKE_CXX_COMPILER")
+    compiler_version_output = run_command([compiler_path, "--version"]) if compiler_path else ""
+    compiler_version_line = compiler_version_output.splitlines()[0] if compiler_version_output else None
+    selected_cache_keys = (
+        "CMAKE_BUILD_TYPE",
+        "CMAKE_CXX_COMPILER_ID",
+        "CMAKE_CXX_COMPILER_VERSION",
+        "CMAKE_CXX_FLAGS",
+        "CMAKE_CXX_FLAGS_DEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE",
+        "CMAKE_GENERATOR",
+        "CMAKE_SYSTEM_NAME",
+        "CMAKE_SYSTEM_PROCESSOR",
+    )
+    return {
+        "build_dir": display_path(str(build_dir)),
+        "cache_found": bool(cache),
+        "compiler_path": compiler_path,
+        "compiler_name": Path(compiler_path).name if compiler_path else None,
+        "compiler_version_output": compiler_version_line,
+        "configured_cxx_flags": configured_cxx_flags,
+        "cmake": {key: cache.get(key) for key in selected_cache_keys},
+        "binary_sha256": sha256_file(binary),
+    }
+
+
+def comparison_context(
+    benchmark_config: dict[str, Any],
+    machine: dict[str, Any],
+    toolchain: dict[str, Any],
+    profile_envs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    system = machine.get("system", {})
+    cpu = machine.get("cpu", {})
+    memory = machine.get("memory", {})
+    cmake = toolchain.get("cmake", {})
+    return {
+        "fingerprint_version": COMPARISON_FINGERPRINT_VERSION,
+        "benchmark": {
+            "scenario": benchmark_config.get("scenario"),
+            "iterations": benchmark_config.get("iterations"),
+            "runs": benchmark_config.get("runs"),
+            "threads": benchmark_config.get("threads"),
+            "sink_bytes": benchmark_config.get("sink_bytes"),
+            "cxx_flags": benchmark_config.get("cxx_flags"),
+            "profiles": profile_envs,
+        },
+        "machine": {
+            "system": system.get("system"),
+            "release": system.get("release"),
+            "machine": system.get("machine"),
+            "cpu_brand": cpu.get("brand"),
+            "physical_cores": cpu.get("physical_cores"),
+            "logical_cores": cpu.get("logical_cores"),
+            "memory_bytes": memory.get("total_bytes"),
+        },
+        "toolchain": {
+            "compiler_name": toolchain.get("compiler_name"),
+            "compiler_version_output": toolchain.get("compiler_version_output"),
+            "configured_cxx_flags": toolchain.get("configured_cxx_flags"),
+            "cmake_build_type": cmake.get("CMAKE_BUILD_TYPE"),
+            "cmake_compiler_id": cmake.get("CMAKE_CXX_COMPILER_ID"),
+            "cmake_compiler_version": cmake.get("CMAKE_CXX_COMPILER_VERSION"),
+            "cmake_cxx_flags": cmake.get("CMAKE_CXX_FLAGS"),
+            "cmake_cxx_flags_debug": cmake.get("CMAKE_CXX_FLAGS_DEBUG"),
+            "cmake_cxx_flags_release": cmake.get("CMAKE_CXX_FLAGS_RELEASE"),
+            "cmake_generator": cmake.get("CMAKE_GENERATOR"),
+            "cmake_system_name": cmake.get("CMAKE_SYSTEM_NAME"),
+            "cmake_system_processor": cmake.get("CMAKE_SYSTEM_PROCESSOR"),
+        },
+    }
+
+
+def comparison_fingerprint(context: dict[str, Any]) -> dict[str, Any]:
+    canonical = json.dumps(context, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    required_fields = {
+        "benchmark.scenario": context.get("benchmark", {}).get("scenario"),
+        "benchmark.iterations": context.get("benchmark", {}).get("iterations"),
+        "machine.system": context.get("machine", {}).get("system"),
+        "machine.machine": context.get("machine", {}).get("machine"),
+        "machine.cpu_brand": context.get("machine", {}).get("cpu_brand"),
+        "toolchain.compiler_name": context.get("toolchain", {}).get("compiler_name"),
+        "toolchain.compiler_version_output": context.get("toolchain", {}).get(
+            "compiler_version_output"
+        ),
+        "toolchain.cmake_generator": context.get("toolchain", {}).get("cmake_generator"),
+    }
+    missing_fields = sorted(
+        key for key, value in required_fields.items() if value in (None, "", "unknown")
+    )
+    return {
+        "version": COMPARISON_FINGERPRINT_VERSION,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "complete": not missing_fields,
+        "missing_fields": missing_fields,
+        "context": context,
+    }
+
+
+def fingerprint_digest(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        digest = value.get("sha256")
+        return digest if isinstance(digest, str) and digest else None
+    return None
+
+
+def fingerprint_is_complete(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("complete") is True
+
+
 def git_metadata(repo_root: Path) -> dict[str, Any]:
     status = run_git(["status", "--short"], repo_root)
     return {
@@ -384,14 +611,17 @@ def load_history_from_git_ref(path: Path, repo_root: Path, ref: str) -> dict[str
     if not repo_path:
         return None
 
-    completed = subprocess.run(
-        ["git", "show", f"{ref}:{repo_path}"],
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "show", f"{ref}:{repo_path}"],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
     if completed.returncode != 0:
         return None
 
@@ -454,14 +684,17 @@ def comparison_reference_metadata(
         "commit": baseline_git.get("commit"),
         "short_commit": baseline_git.get("short_commit"),
         "branch": baseline_git.get("branch"),
+        "comparison_fingerprint": fingerprint_digest(
+            baseline_entry.get("comparison_fingerprint")
+        ),
     }
 
 
 def format_profile_env(template_env: dict[str, str], threads: int, sink_bytes: int) -> dict[str, str]:
-    return {
+    return benchmark_demo.normalize_extra_env({
         key: value.format(threads=threads, sink_bytes=sink_bytes)
         for key, value in template_env.items()
-    }
+    })
 
 
 def display_path(path_value: str) -> str:
@@ -623,6 +856,8 @@ def comparison_delta_text(comparison: dict[str, Any]) -> str:
         return "baseline"
     if status == "unknown":
         return "comparison unavailable"
+    if status == "incomparable":
+        return "incomparable configuration"
 
     metric_name = comparison.get("metric")
     delta_value = comparison.get("delta_value")
@@ -803,6 +1038,7 @@ def render_report(
 
     git = latest.get("git", {})
     config = latest.get("benchmark_config", {})
+    fingerprint = fingerprint_digest(latest.get("comparison_fingerprint"))
     comparison_reference = latest.get("comparison_reference")
     if not comparison_reference:
         baseline_entry, baseline_ref = resolve_main_baseline_entry(
@@ -833,6 +1069,7 @@ def render_report(
                 f"`sink_bytes={config.get('sink_bytes', 'n/a')}`, "
                 f"`cxx_flags={config.get('cxx_flags', 'n/a')}`"
             ),
+            f"- Comparison fingerprint: `{fingerprint or 'unavailable'}`",
         ]
     )
 
@@ -853,6 +1090,19 @@ def render_report(
     machine = latest.get("machine")
     if machine:
         lines.extend(render_machine_lines(machine))
+
+    toolchain = latest.get("toolchain")
+    if toolchain:
+        lines.extend(
+            [
+                "",
+                "## Benchmark toolchain",
+                "",
+                f"- Compiler: `{toolchain.get('compiler_version_output') or 'unknown'}`.",
+                f"- Compiler path: `{toolchain.get('compiler_path') or 'unknown'}`.",
+                f"- Benchmark binary SHA-256: `{toolchain.get('binary_sha256') or 'unknown'}`.",
+            ]
+        )
 
     speed_summary = latest.get("speed_summary") or build_speed_summary(latest.get("results", []))
     if speed_summary:
@@ -910,6 +1160,7 @@ def comparison_for_profile(
     current_report: dict[str, Any],
     baseline_entry: dict[str, Any] | None,
     profile_name: str,
+    current_fingerprint: dict[str, Any] | str | None = None,
 ) -> dict[str, Any]:
     if not baseline_entry:
         return {
@@ -917,6 +1168,44 @@ def comparison_for_profile(
             "status": "baseline",
             "summary": "main baseline unavailable",
         }
+
+    current_digest = fingerprint_digest(current_fingerprint)
+    if current_digest is not None:
+        if not fingerprint_is_complete(current_fingerprint):
+            return {
+                "indicator": "incomparable",
+                "status": "incomparable",
+                "summary": "incomparable: current benchmark fingerprint lacks required metadata",
+                "current_fingerprint": current_digest,
+                "baseline_fingerprint": fingerprint_digest(
+                    baseline_entry.get("comparison_fingerprint")
+                ),
+            }
+        baseline_digest = fingerprint_digest(baseline_entry.get("comparison_fingerprint"))
+        if baseline_digest is None:
+            return {
+                "indicator": "incomparable",
+                "status": "incomparable",
+                "summary": "incomparable: main baseline has no configuration fingerprint",
+                "current_fingerprint": current_digest,
+                "baseline_fingerprint": None,
+            }
+        if not fingerprint_is_complete(baseline_entry.get("comparison_fingerprint")):
+            return {
+                "indicator": "incomparable",
+                "status": "incomparable",
+                "summary": "incomparable: main baseline fingerprint lacks required metadata",
+                "current_fingerprint": current_digest,
+                "baseline_fingerprint": baseline_digest,
+            }
+        if baseline_digest != current_digest:
+            return {
+                "indicator": "incomparable",
+                "status": "incomparable",
+                "summary": "incomparable: benchmark configuration, host, or toolchain differs",
+                "current_fingerprint": current_digest,
+                "baseline_fingerprint": baseline_digest,
+            }
 
     previous_profiles = {
         profile.get("name"): profile for profile in baseline_entry.get("results", [])
@@ -987,80 +1276,111 @@ def print_profile_result(profile: dict[str, Any], report: dict[str, Any], compar
     print(f"comparison:           {comparison['summary']}")
 
 
-def main() -> None:
-    args = parse_args()
+def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    history_path = Path(args.history_file)
-    report_path = Path(args.report_file)
+    try:
+        config = normalize_args(parse_args(), repo_root)
+        if config.refresh_report_only:
+            history = load_history(config.history_path)
+            save_report(config.report_path, history, repo_root, config.history_path)
+            print(f"Saved benchmark report: {config.report_path}")
+            return 0
 
-    if args.refresh_report_only:
-        history = load_history(history_path)
-        save_report(report_path, history, repo_root, history_path)
-        print(f"Saved benchmark report: {report_path}")
-        return
+        if config.binary is None or not config.binary.is_file():
+            raise benchmark_demo.BenchmarkConfigurationError(
+                f"benchmark binary not found: {config.binary}"
+            )
 
-    if not args.binary:
-        raise SystemExit("--binary is required unless --refresh-report-only is used")
-
-    binary = Path(args.binary)
-    if not binary.is_file():
-        raise SystemExit(f"Benchmark binary not found: {binary}")
-
-    history = load_history(history_path)
-    current_git = git_metadata(repo_root)
-    baseline_entry, baseline_ref = resolve_main_baseline_entry(
-        repo_root,
-        history_path,
-        current_git.get("branch", "unknown"),
-    )
-
-    results: list[dict[str, Any]] = []
-    for profile in PROFILE_DEFS:
-        env = format_profile_env(profile["env"], args.threads, args.sink_bytes)
-        report = benchmark_demo.build_report(
-            binary=binary,
-            iterations=max(1, args.iterations),
-            runs=max(1, args.runs),
-            scenario=args.scenario,
-            extra_env=env,
-        )
-        comparison = comparison_for_profile(report, baseline_entry, profile["name"])
-        print_profile_result(profile, report, comparison)
-        results.append(
-            {
-                "name": profile["name"],
-                "label": profile["label"],
-                "env": env,
-                **report,
-                "comparison_to_main_baseline": comparison,
-            }
+        history = load_history(config.history_path)
+        current_git = git_metadata(repo_root)
+        baseline_entry, baseline_ref = resolve_main_baseline_entry(
+            repo_root,
+            config.history_path,
+            current_git.get("branch", "unknown"),
         )
 
-    entry = {
-        "recorded_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "git": current_git,
-        "comparison_reference": comparison_reference_metadata(baseline_entry, baseline_ref),
-        "machine": machine_metadata(repo_root),
-        "benchmark_config": {
-            "binary": str(binary),
-            "build_dir": args.build_dir,
-            "scenario": args.scenario,
-            "iterations": max(1, args.iterations),
-            "runs": max(1, args.runs),
-            "threads": max(1, args.threads),
-            "sink_bytes": max(1, args.sink_bytes),
-            "cxx_flags": args.cxx_flags,
-        },
-        "speed_summary": build_speed_summary(results),
-        "results": results,
-    }
-    history["history"].append(entry)
-    save_history(history_path, history)
-    save_report(report_path, history, repo_root, history_path)
+        benchmark_config = {
+            "binary": display_path(str(config.binary)),
+            "build_dir": display_path(str(config.build_dir)),
+            "scenario": config.scenario,
+            "iterations": config.iterations,
+            "runs": config.runs,
+            "threads": config.threads,
+            "sink_bytes": config.sink_bytes,
+            "cxx_flags": config.cxx_flags,
+        }
+        machine = machine_metadata(repo_root)
+        toolchain = toolchain_metadata(config.build_dir, config.binary, config.cxx_flags)
+        profile_runs = [
+            (
+                profile,
+                format_profile_env(profile["env"], config.threads, config.sink_bytes),
+            )
+            for profile in PROFILE_DEFS
+        ]
+        profile_envs = [
+            {"name": profile["name"], "env": env}
+            for profile, env in profile_runs
+        ]
+        fingerprint = comparison_fingerprint(
+            comparison_context(benchmark_config, machine, toolchain, profile_envs)
+        )
 
-    print(f"Saved benchmark history: {history_path}")
-    print(f"Saved benchmark report: {report_path}")
+        results: list[dict[str, Any]] = []
+        for profile, env in profile_runs:
+            report = benchmark_demo.build_report(
+                binary=config.binary,
+                iterations=config.iterations,
+                runs=config.runs,
+                scenario=config.scenario,
+                extra_env=env,
+            )
+            report["binary"] = display_path(str(report["binary"]))
+            comparison = comparison_for_profile(
+                report,
+                baseline_entry,
+                profile["name"],
+                fingerprint,
+            )
+            print_profile_result(profile, report, comparison)
+            results.append(
+                {
+                    "name": profile["name"],
+                    "label": profile["label"],
+                    "env": env,
+                    **report,
+                    "comparison_to_main_baseline": comparison,
+                }
+            )
+
+        entry = {
+            "recorded_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "git": current_git,
+            "comparison_reference": comparison_reference_metadata(baseline_entry, baseline_ref),
+            "machine": machine,
+            "toolchain": toolchain,
+            "benchmark_config": benchmark_config,
+            "comparison_fingerprint": fingerprint,
+            "speed_summary": build_speed_summary(results),
+            "results": results,
+        }
+        history["history"].append(entry)
+        save_history(config.history_path, history)
+        save_report(config.report_path, history, repo_root, config.history_path)
+
+        print(f"Saved benchmark history: {config.history_path}")
+        print(f"Saved benchmark report: {config.report_path}")
+        return 0
+    except benchmark_demo.BenchmarkConfigurationError as error:
+        print(f"record_demo_benchmarks.py: error: {error}", file=sys.stderr)
+        return 2
+    except benchmark_demo.BenchmarkInvariantError as error:
+        print(
+            f"record_demo_benchmarks.py: benchmark invariant failed: {error}",
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 2,
   "cmakeMinimumRequired": {
     "major": 3,
     "minor": 20,
@@ -7,14 +7,13 @@
   },
   "configurePresets": [
     {
-      "name": "macos-gcc-debug",
-      "displayName": "macOS (Homebrew GCC 15) - Debug",
+      "name": "macos-appleclang-debug",
+      "displayName": "macOS (AppleClang) - Debug",
       "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER": "/opt/homebrew/bin/gcc-15",
-        "CMAKE_CXX_COMPILER": "/opt/homebrew/bin/g++-15"
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++"
       }
     },
     {
@@ -24,15 +23,14 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_COMPILER": "/usr/bin/gcc",
         "CMAKE_CXX_COMPILER": "/usr/bin/g++"
       }
     }
   ],
   "buildPresets": [
     {
-      "name": "macos-gcc-build",
-      "configurePreset": "macos-gcc-debug"
+      "name": "macos-appleclang-build",
+      "configurePreset": "macos-appleclang-debug"
     },
     {
       "name": "linux-gcc-build",
@@ -41,8 +39,8 @@
   ],
   "testPresets": [
     {
-      "name": "macos-gcc-test",
-      "configurePreset": "macos-gcc-debug",
+      "name": "macos-appleclang-test",
+      "configurePreset": "macos-appleclang-debug",
       "output": {
         "outputOnFailure": true
       }

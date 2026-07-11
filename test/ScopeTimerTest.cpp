@@ -20,15 +20,25 @@
  * remotely through a computer network an opportunity to receive the source
  * code of your version.
  */
+
+// The unit suite exercises the debug-only implementation, including private
+// helpers exposed to the friend test class, in every CMake build configuration.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include "ScopeTimer.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <optional>
 #include <thread>
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -45,12 +55,22 @@ using namespace std::chrono_literals;
 // We DO NOT modify ScopeTimer.hpp here.
 namespace xyzzy { namespace scopetimer {
 
+static_assert(!std::is_copy_constructible_v<ScopeTimer>);
+static_assert(!std::is_copy_assignable_v<ScopeTimer>);
+static_assert(!std::is_move_constructible_v<ScopeTimer>);
+static_assert(!std::is_move_assignable_v<ScopeTimer>);
+
 class ScopeTimer_TestFriend {
 public:
     // Entry point that runs the whole suite and returns the number of failures.
     static int run_all(int argc, char** argv) {
         init_exe_path(argc, argv);
         if (int rc = child_probe_main_if_requested(); rc == 0) return 0;
+        if (!initialize_test_log_directory()) {
+            std::fprintf(stderr, "FAIL: unable to create isolated test log directory\n");
+            return 1;
+        }
+        configure_test_environment();
 
         test_is_disabled_env_non_disabled_branch();
         test_simple_scope();
@@ -86,6 +106,7 @@ public:
         test_threadlocal_format_buffers_reused();
         test_scope_timer_string_view_ctor();
         test_scope_timer_literal_ctor_borrows_label();
+        test_scope_timer_copies_dynamic_where();
         test_looped_work();
         test_threaded();
         test_env_format_variants();
@@ -100,6 +121,7 @@ public:
         test_async_sink_flushes_on_disable();
         test_async_sink_flush_calls_custom_sink();
         test_async_sink_reconfiguration_keeps_worker_running();
+        test_custom_sink_reconfiguration_is_synchronized();
         test_hot_path_timer_emits_compact_line();
         test_performance_overhead();
         test_fmt_auto_seconds_branch();
@@ -126,10 +148,12 @@ public:
         test_logfile_failure_cache_branch();
         test_log_fd_has_cloexec();
 
-        if (s_failures == 0) {
+        const int failures = s_failures;
+        if (failures == 0) {
             std::fprintf(stdout, "All ScopeTimer tests passed.\n");
         }
-        return s_failures;
+        cleanup_test_log_directory();
+        return failures;
     }
 
 private:
@@ -221,6 +245,20 @@ private:
         }
     };
 
+    class AtomicLogSink final : public ::xyzzy::scopetimer::ScopeTimer::LogSink {
+    public:
+        void write(const char*, std::size_t) noexcept override {
+            writes.fetch_add(1U, std::memory_order_relaxed);
+        }
+
+        void flush() noexcept override {
+            flushes.fetch_add(1U, std::memory_order_relaxed);
+        }
+
+        std::atomic<std::size_t> writes{0U};
+        std::atomic<std::size_t> flushes{0U};
+    };
+
     static double parseElapsedMillis(const std::string& line) {
         const std::string needle = "elapsed=";
         const auto pos = line.find(needle);
@@ -297,7 +335,7 @@ private:
     static void test_simple_scope() {
         // These log assertions hit the real filesystem because ScopeTimer's contract is to
         // append plain-text entries; parsing the actual log exercises the same path end users get.
-        const std::string logDir = "/tmp";
+        const std::string& logDir = s_test_log_directory;
         const std::string logPath = logDir + "/ScopeTimer.log";
         std::remove(logPath.c_str());
         ::setenv("SCOPE_TIMER_DIR", logDir.c_str(), 1);
@@ -574,7 +612,7 @@ private:
         sinkCaptureBuffer().clear();
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
         const std::string longLabel(700, 'L');
-        {
+        for (int i = 0; i < 2; ++i) {
             ::xyzzy::scopetimer::ScopeTimer timer("tests:long_label_scope", longLabel);
             busyFor(20us);
         }
@@ -585,6 +623,10 @@ private:
                "overlong log line preserves the leading label prefix");
         expect(sinkCaptureBuffer().find('\0') == std::string::npos,
                "overlong log line remains plain text");
+        expect(sinkCaptureBuffer().back() == '\n',
+               "overlong log line retains its terminating newline");
+        expect(std::count(sinkCaptureBuffer().begin(), sinkCaptureBuffer().end(), '\n') == 2,
+               "consecutive overlong log lines remain separate records");
     }
 
     static void test_summarize_script_handles_nanos() {
@@ -612,14 +654,14 @@ private:
         expect(::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1,
                "default sink write leaves fd closed when directory invalid");
 
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
     }
 
     static void test_ensure_log_fd_reuses_existing_handle() {
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
         ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
 
         bool opened = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
@@ -646,8 +688,8 @@ private:
         expect(::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1,
                "defaultSinkWrite returns quickly when fd cannot open");
 
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
     }
 
     static void test_label_storage_uses_local_buffer() {
@@ -675,6 +717,24 @@ private:
         expect(::xyzzy::scopetimer::ScopeTimer::labelUsesBorrowedStorageForTests(timer),
                "ScopeTimer literal ctor borrows stable label storage");
         timer.disabled_ = true;
+    }
+
+    static void test_scope_timer_copies_dynamic_where() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+
+        std::optional<::xyzzy::scopetimer::ScopeTimer> timer;
+        {
+            std::string dynamicWhere = "tests:where:temporary:" + std::to_string(::getpid());
+            timer.emplace(std::string_view{dynamicWhere}, "tests:where:lifetime");
+        }
+        std::vector<std::string> overwriteFreedStorage(32U, std::string(256U, 'x'));
+        (void)overwriteFreedStorage;
+        timer.reset();
+
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(sinkCaptureBuffer().find("tests:where:temporary:") != std::string::npos,
+               "ScopeTimer copies dynamic where text until destruction");
     }
 
     static void test_labelarg_temporary_string() {
@@ -755,15 +815,34 @@ private:
 
     static void test_threaded() {
         SCOPE_TIMER("tests:threaded:total");
+        constexpr int WorkerCount = 24;
+        std::atomic<int> active{0};
+        std::atomic<int> maxActive{0};
+        std::atomic<int> completed{0};
         std::vector<std::thread> tg;
-        for (int i = 0; i < 1000; ++i) {
-            tg.emplace_back([i]() {
+        tg.reserve(WorkerCount);
+        for (int i = 0; i < WorkerCount; ++i) {
+            tg.emplace_back([&active, &maxActive, &completed]() {
                 SCOPE_TIMER("tests:threaded:worker");
-                std::this_thread::sleep_for(std::chrono::microseconds{10 + i * 5});
+                const int currentActive = active.fetch_add(1, std::memory_order_relaxed) + 1;
+                int observedMax = maxActive.load(std::memory_order_relaxed);
+                while (currentActive > observedMax
+                       && !maxActive.compare_exchange_weak(
+                           observedMax,
+                           currentActive,
+                           std::memory_order_relaxed
+                       )) {
+                }
+                std::this_thread::sleep_for(1000us);
+                active.fetch_sub(1, std::memory_order_relaxed);
+                completed.fetch_add(1, std::memory_order_relaxed);
             });
         }
         for (auto& t : tg) t.join();
-        expect(true, "threaded work executed");
+        expect(completed.load(std::memory_order_relaxed) == WorkerCount,
+               "threaded work completes every worker");
+        expect(maxActive.load(std::memory_order_relaxed) > 1,
+               "threaded work overlaps multiple workers");
     }
 
     static void test_env_format_variants() {
@@ -882,7 +961,7 @@ private:
     static void test_async_sink_flushes_on_disable() {
         char templ[] = "/tmp/scopetimer_async_disableXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         const std::string logfile = tmpdir + "/ScopeTimer.log";
         std::remove(logfile.c_str());
 
@@ -906,7 +985,7 @@ private:
                "async sink flushes pending data on disable");
 
         std::remove(logfile.c_str());
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
         ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
         if (tdir) {
             ::rmdir(tmpdir.c_str());
@@ -953,6 +1032,35 @@ private:
         expect(true, "async buffered target accepts forced empty flush");
         SCOPE_TIMER_DISABLE_ASYNC_SINK();
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+    }
+
+    static void test_custom_sink_reconfiguration_is_synchronized() {
+        AtomicLogSink firstSink;
+        AtomicLogSink secondSink;
+        ::xyzzy::scopetimer::ScopeTimer::setLogSink(firstSink);
+
+        std::thread writer([] {
+            for (int i = 0; i < 500; ++i) {
+                SCOPE_TIMER("tests:custom_sink:concurrent");
+            }
+        });
+        std::thread reconfigure([&firstSink, &secondSink] {
+            for (int i = 0; i < 100; ++i) {
+                if ((i % 2) == 0) {
+                    ::xyzzy::scopetimer::ScopeTimer::setLogSink(secondSink);
+                } else {
+                    ::xyzzy::scopetimer::ScopeTimer::setLogSink(firstSink);
+                }
+            }
+        });
+
+        writer.join();
+        reconfigure.join();
+        ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
+
+        const std::size_t totalWrites = firstSink.writes.load(std::memory_order_relaxed)
+            + secondSink.writes.load(std::memory_order_relaxed);
+        expect(totalWrites > 0U, "custom sink writes remain synchronized during reconfiguration");
     }
 
     static void test_hot_path_timer_emits_compact_line() {
@@ -1012,6 +1120,7 @@ private:
         auto baseline = measureLoopDuration(iterations, []() noexcept {
             volatile int guard = 0;
             guard += 1;
+            (void)guard;
         });
 
         const bool runDefault = allModes || defaultOnly;
@@ -1024,6 +1133,7 @@ private:
                 SCOPE_TIMER("tests:perf:overhead");
                 volatile int guard = 0;
                 guard += 1;
+                (void)guard;
             });
 
             long long overheadNs = (timed - baseline).count();
@@ -1045,6 +1155,7 @@ private:
                 SCOPE_TIMER("tests:perf:noop");
                 volatile int guard = 0;
                 guard += 1;
+                (void)guard;
             });
             ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&CountingSink::write, &CountingSink::flush);
 
@@ -1070,6 +1181,7 @@ private:
                 SCOPE_TIMER("tests:perf:buffered");
                 volatile int guard = 0;
                 guard += 1;
+                (void)guard;
             });
             SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
             ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(nullptr);
@@ -1246,8 +1358,18 @@ private:
         std::size_t len = ::xyzzy::scopetimer::ScopeTimer::buildLogLine(&ignored, 0U, fields);
         expect(len == 0U, "buildLogLine returns zero for empty output buffers");
 
+        char oneByte = 'x';
+        len = ::xyzzy::scopetimer::ScopeTimer::buildLogLine(&oneByte, 1U, fields);
+        expect(len == 0U && oneByte == '\0',
+               "buildLogLine clears buffers too small for newline and terminator");
+
         len = ::xyzzy::scopetimer::ScopeTimer::buildHotPathLogLine(&ignored, 0U, "label", "1ns", 3U);
         expect(len == 0U, "buildHotPathLogLine returns zero for empty output buffers");
+
+        oneByte = 'x';
+        len = ::xyzzy::scopetimer::ScopeTimer::buildHotPathLogLine(&oneByte, 1U, "label", "1ns", 3U);
+        expect(len == 0U && oneByte == '\0',
+               "buildHotPathLogLine clears buffers too small for newline and terminator");
 
         char timeIgnored = 'x';
         len = ::xyzzy::scopetimer::ScopeTimer::formatTime(std::chrono::system_clock::now(), &timeIgnored, 0U);
@@ -1286,8 +1408,8 @@ private:
         expect(sinkFlushCount() == 1U, "flushActiveSink routes custom sink flushes through the registered callback");
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
 
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
         ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
         ::xyzzy::scopetimer::ScopeTimer::flushActiveSink(::xyzzy::scopetimer::ScopeTimer::ActiveSink::Default);
         expect(true, "flushActiveSink handles the default sink path");
@@ -1305,7 +1427,7 @@ private:
 
     static void test_default_sink_write_batches_cover_error_and_chunking_paths() {
         const std::string invalidDir = "/tmp/scopetimer_missing_batches_" + std::to_string(::getpid());
-        const std::string logPath = "/tmp/ScopeTimer.log";
+        const std::string logPath = s_test_log_directory + "/ScopeTimer.log";
 
         ::setenv("SCOPE_TIMER_DIR", invalidDir.c_str(), 1);
         ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(invalidDir);
@@ -1320,8 +1442,8 @@ private:
                "defaultSinkWriteBatches leaves the fd closed when the log file cannot be opened");
 
         std::remove(logPath.c_str());
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
         ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
 
         std::deque<::xyzzy::scopetimer::ScopeTimer::AsyncSinkBatch> batches;
@@ -1347,6 +1469,15 @@ private:
 
     static void test_finalize_snprintf_result_branches() {
         using xyzzy::scopetimer::ScopeTimerDetail::finalize_snprintf_result;
+        {
+            char ignored = 'X';
+            const size_t zeroSizeLen = finalize_snprintf_result(-1, &ignored, 0U);
+            const size_t nullLen = finalize_snprintf_result(1, nullptr, 1U);
+            expect(zeroSizeLen == 0U && ignored == 'X',
+                   "finalize_snprintf_result: zero-size buffers are untouched");
+            expect(nullLen == 0U,
+                   "finalize_snprintf_result: null buffers are rejected");
+        }
         {
             char buf[8]; for (auto &c : buf) c = 'X';
             size_t len = finalize_snprintf_result(-1, buf, sizeof(buf));
@@ -1438,7 +1569,7 @@ private:
     static void test_disabled_via_env_child_process() {
         char templ[] = "/tmp/scopetimerXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         int rc = run_child_with_env({{"SCOPE_TIMER","0"},{"SCOPE_TIMER_FORMAT","MICROS"},{"SCOPE_TIMER_DIR",tmpdir}});
         expect(rc == 0, "disabled via env executed in child process");
     }
@@ -1446,7 +1577,7 @@ private:
     static void test_hot_path_disabled_via_env_child_process() {
         char templ[] = "/tmp/scopetimer_hotpath_disabledXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         const std::string logfile = tmpdir + "/ScopeTimer.log";
         std::remove(logfile.c_str());
 
@@ -1470,7 +1601,7 @@ private:
     static void test_thread_buffered_sink_flushes_on_process_exit() {
         char templ[] = "/tmp/scopetimer_bufferedXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         const std::string logfile = tmpdir + "/ScopeTimer.log";
         std::remove(logfile.c_str());
 
@@ -1498,7 +1629,7 @@ private:
     static void test_async_sink_flushes_on_process_exit() {
         char templ[] = "/tmp/scopetimer_asyncXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         const std::string logfile = tmpdir + "/ScopeTimer.log";
         std::remove(logfile.c_str());
 
@@ -1526,7 +1657,7 @@ private:
     static void test_walltime_disable_omits_timestamps() {
         char templ[] = "/tmp/scopetimer_walltimeXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         const std::string logfile = tmpdir + "/ScopeTimer.log";
         std::remove(logfile.c_str());
 
@@ -1561,7 +1692,7 @@ private:
         for (const char* variant : variants) {
             char templ[] = "/tmp/scopetimer_disabled_variantXXXXXX";
             char* tdir = ::mkdtemp(templ);
-            std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+            std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
             const std::string logfile = tmpdir + "/ScopeTimer.log";
             std::remove(logfile.c_str());
             std::vector<std::pair<std::string,std::string>> env = {
@@ -1603,7 +1734,7 @@ private:
         expect(rc1 == 0, "non-existent log dir handled in child process");
         char templ[] = "/tmp/scopetimer_ldirXXXXXX";
         char* tdir = ::mkdtemp(templ);
-        std::string tmpdir = tdir ? std::string(tdir) : std::string("/tmp");
+        std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;
         int rc2 = run_child_with_env({{"SCOPE_TIMER_DIR", tmpdir},{"SCOPE_TIMER_FORMAT","MICROS"}});
         expect(rc2 == 0, "valid log dir handled in child process");
     }
@@ -1644,14 +1775,14 @@ private:
         bool secondAttempt = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
         expect(!secondAttempt, "ensureLogFdOpen skips repeated attempts for same bad path");
 
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
     }
 
     static void test_log_fd_has_cloexec() {
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
-        ::setenv("SCOPE_TIMER_DIR", "/tmp", 1);
-        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp");
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
         ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
 
         bool opened = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
@@ -1665,8 +1796,37 @@ private:
     }
 
     // --------- bootstrapping helpers ---------
+    static bool initialize_test_log_directory() {
+        char templ[] = "/tmp/scopetimer_suiteXXXXXX";
+        if (char* directory = ::mkdtemp(templ)) {
+            s_test_log_directory = directory;
+            return true;
+        }
+        return false;
+    }
+
+    static void configure_test_environment() {
+        // Formatter and wall-time settings are cached on first use. Pin them
+        // before any timer is constructed so ambient developer/CI variables
+        // cannot change the meaning of filesystem assertions later in the run.
+        ::setenv("SCOPE_TIMER_FORMAT", "MILLIS", 1);
+        ::setenv("SCOPE_TIMER_WALLTIME", "1", 1);
+        ::setenv("SCOPE_TIMER_FLUSH_N", "1", 1);
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+    }
+
+    static void cleanup_test_log_directory() {
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+        if (!s_test_log_directory.empty()) {
+            const std::string logPath = s_test_log_directory + "/ScopeTimer.log";
+            std::remove(logPath.c_str());
+            ::rmdir(s_test_log_directory.c_str());
+            s_test_log_directory.clear();
+        }
+    }
+
     static void init_exe_path(int argc, char** argv) {
-        if (argv && argv[0]) {
+        if (argc > 0 && argv && argv[0]) {
             char buf[4096];
             if (::realpath(argv[0], buf)) s_exe_path = buf; else s_exe_path = argv[0];
         } else {
@@ -1690,6 +1850,7 @@ private:
     // state
     static inline int s_failures;
     static inline std::string s_exe_path;
+    static inline std::string s_test_log_directory;
 };
 
 }} // namespace xyzzy::scopetimer

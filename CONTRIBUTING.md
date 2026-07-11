@@ -1,42 +1,50 @@
-# Contributing to This Project
+<!-- markdownlint-disable MD013 -->
 
-## Commit Message Guidelines (Conventional Commits)
+# Contributing to ScopeTimer
 
-All commit messages **must follow the
-[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)**
-format:
+Develop changes on `develop` and open pull requests against `main`. Keep each change focused, include regression coverage for bug fixes, and update user-facing documentation when behavior or configuration changes.
 
-```text
-<type>(JIRA-KEY:scope): <short summary>
+## Commit messages
 
-[optional body]
-
-[optional footer(s)]
-```
-
-### Types
-
-- `feat` – a new feature
-- `fix` – a bug fix
-- `chore` – non-functional changes (builds, tools)
-- `docs` – documentation only
-- `style` – formatting, whitespace, etc.
-- `refactor` – code change not fixing a bug or adding a feature
-- `test` – adding or correcting tests
-- `ci` – changes to CI/CD config or scripts
-
-### Examples
+Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 
 ```text
-feat(DO-1431:decoder): add support for obfuscated fix tags
-fix(DO-1431:autogen): fix malformed xml
-BREAKING CHANGE(DO-1431): changed cmdline flag prefix to --
+<type>[(optional-scope)]: <short summary>
 ```
 
-## 🛠️ Local Git Config (Optional)
+Common types are `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, and `chore`.
 
-To enable a default commit message structure:
+Examples:
+
+```text
+fix(scopetimer): preserve async records at process exit
+perf(scopetimer): reduce buffered sink handoff overhead
+docs(readme): clarify custom sink lifetime
+```
+
+For a breaking change, add a `BREAKING CHANGE:` footer explaining the compatibility impact.
+
+## Local validation
+
+Run the normal build and test suite:
 
 ```bash
-git config commit.template .gitmessage.txt
+cmake -S . -B build-review -DAUTO_REFRESH_DOCS=OFF
+cmake --build build-review --parallel
+ctest --test-dir build-review --output-on-failure
 ```
+
+Run the header coverage and platform leak-check targets when their prerequisites are available:
+
+```bash
+cmake --build build-review --target scopetimer_header_coverage
+cmake --build build-review --target leak_check
+```
+
+Changes that can affect timer overhead, sink behavior, formatting, buffering, threading, or benchmark configuration also require the local MacBook benchmark matrix:
+
+```bash
+cmake --build build-review --target demo_benchmark_matrix
+```
+
+Keep `BENCHMARK.md` and `benchmarks/demo_benchmark_history.json` together when a benchmark snapshot changes. Benchmarks are intentionally local-only and must not be added to GitHub Actions.

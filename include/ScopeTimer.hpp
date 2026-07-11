@@ -50,7 +50,8 @@
  *
  * - SCOPE_TIMER_DIR:
  *     Specifies the directory path where the log file `ScopeTimer.log` is created.
- *     Defaults to `/tmp` if unset.
+ *     Defaults to `/tmp` on POSIX. On Windows, TEMP, then TMP, then the current
+ *     directory is used. The selected directory must already exist and be writable.
  *
  * - SCOPE_TIMER_FLUSH_N:
  *     Specifies the number of log lines between active sink flush hook calls.
@@ -203,6 +204,9 @@ namespace xyzzy::scopetimer {
     // Small helper extracted to make branch coverage testable in unit tests
     namespace ScopeTimerDetail {
         inline std::size_t finalize_snprintf_result(int n, char* line, std::size_t lineSize) noexcept {
+            if (line == nullptr || lineSize == 0U) {
+                return 0U;
+            }
             if (n < 0) {
                 // Formatting error: write nothing
                 line[0] = '\0';
@@ -226,6 +230,19 @@ namespace xyzzy::scopetimer {
             Borrowed,
             Copy,
         };
+
+        struct BorrowedWhere {
+            std::string_view view;
+        };
+
+        template <std::size_t N>
+        inline BorrowedWhere makeBorrowedWhere(const char (&literal)[N]) noexcept {
+            return BorrowedWhere{std::string_view{literal, N ? N - 1U : 0U}};
+        }
+
+        inline BorrowedWhere makeBorrowedWhere(const char* stableText) noexcept {
+            return BorrowedWhere{stableText ? std::string_view{stableText} : std::string_view{}};
+        }
 
         struct LabelData {
             std::string storage;
@@ -377,14 +394,27 @@ namespace xyzzy::scopetimer {
                 return;
             }
 
-            where_ = where;
-            assignLabel(std::move(labelData));
-            threadNum_ = getThreadIdNumber();
-            startSteady_ = std::chrono::steady_clock::now();
-            if (includeWallTime()) {
-                startWall_ = std::chrono::system_clock::now();
-                startWallFormattedLen_ = static_cast<std::uint8_t>(formatTime(startWall_, startWallFormatted_, sizeof(startWallFormatted_)));
+            if (!assignWhere(where)) {
+                disabled_ = true;
+                return;
             }
+            startStandardTimer(std::move(labelData));
+        }
+
+        /**
+         * @brief Internal fast path for compiler-provided function names with static storage.
+         */
+        inline explicit ScopeTimer(
+            detail::BorrowedWhere where,
+            detail::LabelData labelData = detail::LabelData{}
+        ) noexcept {
+            if (isDisabled()) {
+                disabled_ = true;
+                return;
+            }
+
+            where_ = where.view;
+            startStandardTimer(std::move(labelData));
         }
 
         /**
@@ -408,7 +438,10 @@ namespace xyzzy::scopetimer {
             }
 
             hotPathMode_ = true;
-            assignLabel(std::move(labelData));
+            if (!assignLabel(std::move(labelData))) {
+                disabled_ = true;
+                return;
+            }
             startSteady_ = std::chrono::steady_clock::now();
         }
 
@@ -425,6 +458,8 @@ namespace xyzzy::scopetimer {
 
         ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
         ScopeTimer& operator=(const ScopeTimer&) = delete; ///< Deleted copy assignment operator.
+        ScopeTimer(ScopeTimer&&) = delete; ///< Timers must remain bound to their original scope.
+        ScopeTimer& operator=(ScopeTimer&&) = delete; ///< Timers must remain bound to their original scope.
 
         /**
          * @brief Destructor that records the end time, computes elapsed duration,
@@ -481,22 +516,22 @@ namespace xyzzy::scopetimer {
             // steady-state timer path without improving correctness. Sonar's blanket
             // seq_cst rule is suppressed for this header in sonar-project.properties.
             const auto activeSink = activeSinkStorage().load(std::memory_order_acquire);
-            if (len) {
-                if (activeSink != ActiveSink::ThreadBuffered) {
-                    std::lock_guard lock(outMutex());
-                    writeToActiveSink(activeSink, lineBuf.data, len);
-                } else {
+            if (activeSink != ActiveSink::ThreadBuffered) {
+                std::lock_guard lock(outMutex());
+                if (len) {
                     writeToActiveSink(activeSink, lineBuf.data, len);
                 }
-            }
 
-            // Thread-buffered sink flushes on size; avoid periodic counters and
-            // interval checks to keep the buffered hot path cheap.
-            if (activeSink != ActiveSink::ThreadBuffered) {
+                // Serialize custom sink flush hooks with writes and sink
+                // reconfiguration. The default sink's flush hook is a no-op.
                 const unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1U;
                 if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
                     flushActiveSink(activeSink);
                 }
+            } else if (len) {
+                // Thread-buffered sink flushes on size; avoid periodic counters and
+                // interval checks to keep the buffered hot path cheap.
+                writeToActiveSink(activeSink, lineBuf.data, len);
             }
         }
 
@@ -505,15 +540,19 @@ namespace xyzzy::scopetimer {
                 flushBytes = 16U * 1024U;
             }
             std::lock_guard sinkStateLock(sinkConfigMutex());
+            registerProcessCleanup();
             flushAllThreadBuffers();
             asyncSinkFlush();
             shutdownAsyncSink();
-            closeLogFd();
-            threadBufferFlushBytesStorage().store(flushBytes);
-            activeSinkStorage().store(ActiveSink::ThreadBuffered, std::memory_order_release);
-            bufferedSinkTargetModeStorage().store(hasCustomSink() ? BufferedSinkTargetMode::Custom
-                                                                  : BufferedSinkTargetMode::Default,
-                                                  std::memory_order_release);
+            {
+                std::lock_guard outputLock(outMutex());
+                closeLogFd();
+                threadBufferFlushBytesStorage().store(flushBytes);
+                activeSinkStorage().store(ActiveSink::ThreadBuffered, std::memory_order_release);
+                bufferedSinkTargetModeStorage().store(hasCustomSink() ? BufferedSinkTargetMode::Custom
+                                                                      : BufferedSinkTargetMode::Default,
+                                                      std::memory_order_release);
+            }
         }
 
         static inline void disableThreadBufferedSink() noexcept {
@@ -521,8 +560,11 @@ namespace xyzzy::scopetimer {
             flushAllThreadBuffers();
             asyncSinkFlush();
             shutdownAsyncSink();
-            closeLogFd();
-            restoreDefaultSinkState();
+            {
+                std::lock_guard outputLock(outMutex());
+                closeLogFd();
+                restoreDefaultSinkState();
+            }
         }
 
         static inline void enableAsyncSink(std::size_t flushBytes = 16U * 1024U) noexcept {
@@ -530,16 +572,20 @@ namespace xyzzy::scopetimer {
                 flushBytes = 16U * 1024U;
             }
             std::lock_guard sinkStateLock(sinkConfigMutex());
+            registerProcessCleanup();
             flushAllThreadBuffers();
             asyncSinkFlush();
             shutdownAsyncSink();
-            closeLogFd();
-            threadBufferFlushBytesStorage().store(flushBytes);
-            activeSinkStorage().store(ActiveSink::ThreadBuffered, std::memory_order_release);
-            bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Async, std::memory_order_release);
-            asyncSinkTargetModeStorage().store(hasCustomSink() ? AsyncSinkTargetMode::Custom
-                                                               : AsyncSinkTargetMode::Default,
-                                               std::memory_order_release);
+            {
+                std::lock_guard outputLock(outMutex());
+                closeLogFd();
+                threadBufferFlushBytesStorage().store(flushBytes);
+                activeSinkStorage().store(ActiveSink::ThreadBuffered, std::memory_order_release);
+                bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Async, std::memory_order_release);
+                asyncSinkTargetModeStorage().store(hasCustomSink() ? AsyncSinkTargetMode::Custom
+                                                                   : AsyncSinkTargetMode::Default,
+                                                   std::memory_order_release);
+            }
             ensureAsyncSinkRunning();
         }
 
@@ -665,7 +711,7 @@ namespace xyzzy::scopetimer {
         /**
          * @brief Resolves the log directory from environment overrides.
          *
-         * Controlled solely by SCOPE_TIMER_DIR; defaults to /tmp when unset/empty.
+         * Controlled by SCOPE_TIMER_DIR, with a platform-appropriate fallback.
          */
         static inline const std::string& logDirectory() {
             if (!logDirInitialized_) {
@@ -685,10 +731,24 @@ namespace xyzzy::scopetimer {
                 }
             }
             if (normalized.empty()) {
+#if defined(_WIN32)
+                if (const char* temp = std::getenv("TEMP"); temp && *temp) {
+                    normalized = temp;
+                } else if (const char* temp = std::getenv("TMP"); temp && *temp) {
+                    normalized = temp;
+                } else {
+                    normalized = ".";
+                }
+#else
                 normalized = "/tmp";
+#endif
             }
-            if (!normalized.empty() && normalized.back() != '/') {
+            if (!normalized.empty() && normalized.back() != '/' && normalized.back() != '\\') {
+#if defined(_WIN32)
+                normalized.push_back('\\');
+#else
                 normalized.push_back('/');
+#endif
             }
             logDirCache_ = std::move(normalized);
             logDirInitialized_ = true;
@@ -715,8 +775,8 @@ namespace xyzzy::scopetimer {
         }
 
         static inline bool appendFixedDigits(char*& out, const char* end, unsigned value, unsigned width) noexcept {
-            constexpr unsigned MaxFixedDigitWidth = 10U;
-            if (width > MaxFixedDigitWidth || static_cast<std::size_t>(end - out) < width) {
+            if (constexpr unsigned MaxFixedDigitWidth = 10U;
+                width > MaxFixedDigitWidth || static_cast<std::size_t>(end - out) < width) {
                 return false;
             }
 
@@ -1060,12 +1120,15 @@ namespace xyzzy::scopetimer {
             std::size_t outSz,
             const LogLineFields& fields
         ) noexcept {
-            if (outSz == 0) {
+            if (outSz < 2U) {
+                if (outSz == 1U) {
+                    out[0] = '\0';
+                }
                 return 0;
             }
 
             char* cur = out;
-            const char* end = out + outSz - 1U; // reserve a byte for a terminator
+            const char* end = out + outSz - 2U; // reserve newline plus terminator
 
             appendCharTruncating(cur, end, '[');
             appendBytesTruncating(cur, end, fields.label.data(), fields.label.size());
@@ -1081,8 +1144,7 @@ namespace xyzzy::scopetimer {
             }
             appendBytesTruncating(cur, end, " | elapsed=", sizeof(" | elapsed=") - 1U);
             appendBytesTruncating(cur, end, fields.elapsed.data(), fields.elapsed.size());
-            appendCharTruncating(cur, end, '\n');
-
+            *cur++ = '\n';
             *cur = '\0';
             return static_cast<std::size_t>(cur - out);
         }
@@ -1094,18 +1156,20 @@ namespace xyzzy::scopetimer {
             const char* elapsed,
             std::size_t elapsedLen
         ) noexcept {
-            if (outSz == 0) {
+            if (outSz < 2U) {
+                if (outSz == 1U) {
+                    out[0] = '\0';
+                }
                 return 0;
             }
 
             char* cur = out;
-            const char* end = out + outSz - 1U;
+            const char* end = out + outSz - 2U;
             appendCharTruncating(cur, end, '[');
             appendBytesTruncating(cur, end, label.data(), label.size());
             appendBytesTruncating(cur, end, "] elapsed=", sizeof("] elapsed=") - 1U);
             appendBytesTruncating(cur, end, elapsed, elapsedLen);
-            appendCharTruncating(cur, end, '\n');
-
+            *cur++ = '\n';
             *cur = '\0';
             return static_cast<std::size_t>(cur - out);
         }
@@ -1641,11 +1705,12 @@ namespace xyzzy::scopetimer {
             flushAllThreadBuffers();
             asyncSinkFlush();
             shutdownAsyncSink();
-            closeLogFd();
 
             const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
                 && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
 
+            std::lock_guard outputLock(outMutex());
+            closeLogFd();
             customLogSinkStorage() = nullptr;
             customSinkWriteStorage() = std::move(writeFn);
             customSinkFlushStorage() = flushFn ? std::move(flushFn) : std::function<void()>{};
@@ -1657,11 +1722,12 @@ namespace xyzzy::scopetimer {
             flushAllThreadBuffers();
             asyncSinkFlush();
             shutdownAsyncSink();
-            closeLogFd();
 
             const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
                 && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
 
+            std::lock_guard outputLock(outMutex());
+            closeLogFd();
             customLogSinkStorage() = sink;
             customSinkWriteStorage() = {};
             customSinkFlushStorage() = {};
@@ -1707,17 +1773,53 @@ namespace xyzzy::scopetimer {
             );
         }
 
-        inline void assignLabel(detail::LabelData data) noexcept {
+        inline void startStandardTimer(detail::LabelData labelData) noexcept {
+            if (!assignLabel(std::move(labelData))) {
+                disabled_ = true;
+                return;
+            }
+            threadNum_ = getThreadIdNumber();
+            startSteady_ = std::chrono::steady_clock::now();
+            if (includeWallTime()) {
+                startWall_ = std::chrono::system_clock::now();
+                startWallFormattedLen_ = static_cast<std::uint8_t>(formatTime(
+                    startWall_,
+                    startWallFormatted_,
+                    sizeof(startWallFormatted_)
+                ));
+            }
+        }
+
+        inline bool assignWhere(std::string_view source) noexcept {
+            if (source.empty()) {
+                whereHeapStorage_.clear();
+                where_ = {};
+                return true;
+            }
+            try {
+                whereHeapStorage_.assign(source.data(), source.size());
+            } catch (...) {
+                // Instrumentation must not terminate the host process if an
+                // owned diagnostic string cannot be allocated.
+                whereHeapStorage_.clear();
+                where_ = {};
+                return false;
+            }
+            where_ = whereHeapStorage_;
+            return true;
+        }
+
+        inline bool assignLabel(detail::LabelData data) noexcept {
             const std::string_view source = !data.storage.empty() ? std::string_view{data.storage} : data.view;
             if (source.empty()) {
                 label_ = "ScopeTimer";
-                return;
+                return true;
             }
 
             if (data.canBorrowView()) {
                 label_ = source;
                 labelHeapStorage_.clear();
-                return;
+                return true;
             }
 
             if (source.size() < labelBuffer_.size()) {
@@ -1725,12 +1827,24 @@ namespace xyzzy::scopetimer {
                 label_ = std::string_view{labelBuffer_.data(), source.size()};
                 labelHeapStorage_.clear();
             } else {
-                labelHeapStorage_ = !data.storage.empty() ? std::move(data.storage) : std::string(source);
+                try {
+                    labelHeapStorage_ = !data.storage.empty()
+                        ? std::move(data.storage)
+                        : std::string(source);
+                } catch (...) {
+                    // Preserve the constructor's noexcept contract by dropping
+                    // this timer when long-label storage cannot be allocated.
+                    labelHeapStorage_.clear();
+                    label_ = "ScopeTimer";
+                    return false;
+                }
                 label_ = labelHeapStorage_;
             }
+            return true;
         }
 
         std::string_view where_; ///< Description of the scope being timed.
+        std::string whereHeapStorage_;
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
         std::array<char, 128> labelBuffer_{};
         std::string labelHeapStorage_;
@@ -1808,7 +1922,7 @@ namespace xyzzy::scopetimer {
                 fd = newFd;
                 lastAttemptFailed = false;
                 lastFailedPath.clear();
-                registerLogFdCleanup();
+                registerProcessCleanup();
                 return true;
             }
 
@@ -1818,20 +1932,22 @@ namespace xyzzy::scopetimer {
         }
 
         /**
-         * @brief Registers the atexit handler that closes the log descriptor.
+         * @brief Registers the atexit handler that drains active sinks and closes the log descriptor.
          */
-        static inline void registerLogFdCleanup() noexcept {
-            static bool registered = false;
-            if (!registered) {
-                std::atexit([]() noexcept {
+        static inline void registerProcessCleanup() noexcept {
+            // Function-local static initialization is synchronized by C++11.
+            // This can be reached concurrently through the default sink and a
+            // buffered-sink setup call, so a hand-rolled boolean would race.
+            static const bool registered = []() noexcept {
+                return std::atexit([]() noexcept {
                     std::lock_guard sinkStateLock(sinkConfigMutex());
                     flushAllThreadBuffers();
                     asyncSinkFlush();
                     shutdownAsyncSink();
                     closeLogFd();
-                });
-                registered = true;
-            }
+                }) == 0;
+            }();
+            (void)registered;
         }
 
         /**
@@ -1922,10 +2038,10 @@ namespace xyzzy::scopetimer {
     namespace detail {
         class ConditionalScopeTimer {
         public:
-            template <typename LabelFactory>
-            ConditionalScopeTimer(bool enabled, std::string_view where, LabelFactory&& labelFactory) noexcept {
+            template <typename Where, typename LabelFactory>
+            ConditionalScopeTimer(bool enabled, Where&& where, LabelFactory&& labelFactory) noexcept {
                 if (enabled) {
-                    timer_.emplace(where, labelFactory());
+                    timer_.emplace(std::forward<Where>(where), labelFactory());
                 } else {
                     (void)where;
                 }
@@ -1970,7 +2086,8 @@ namespace xyzzy::scopetimer {
 #ifndef SCOPE_TIMER
 #define SCOPE_TIMER(...)                                                             \
     ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
-        SCOPE_FUNCTION, ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__))
+        ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION),              \
+        ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__))
 #endif
 
 /**
@@ -1994,7 +2111,10 @@ namespace xyzzy::scopetimer {
 #ifndef SCOPE_TIMER_IF
 #define SCOPE_TIMER_IF(cond, ...)                                                          \
     ::xyzzy::scopetimer::detail::ConditionalScopeTimer                                       \
-        ST_CAT(scopeTimerConditional__, ST_UNIQ)((cond), SCOPE_FUNCTION, [&]() noexcept {  \
+        ST_CAT(scopeTimerConditional__, ST_UNIQ)(                                          \
+            (cond),                                                                         \
+            ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION),                 \
+            [&]() noexcept {                                                                 \
             return ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__);                  \
         })
 #endif
@@ -2036,6 +2156,8 @@ namespace xyzzy::scopetimer {
      */
     class ScopeTimer {
     public:
+        struct HotPathTag {};
+
         class LogSink {
         public:
             virtual ~LogSink() = default;
@@ -2050,11 +2172,20 @@ namespace xyzzy::scopetimer {
          * @param label Unused parameter for compatibility.
          */
         inline explicit ScopeTimer(std::string_view, std::string_view = "ScopeTimer") noexcept {}
+        inline explicit ScopeTimer(HotPathTag, std::string_view = "ScopeTimer") noexcept {}
+        ScopeTimer(const ScopeTimer&) = delete;
+        ScopeTimer& operator=(const ScopeTimer&) = delete;
+        ScopeTimer(ScopeTimer&&) = delete;
+        ScopeTimer& operator=(ScopeTimer&&) = delete;
+        static inline void enableThreadBufferedSink(std::size_t = 16U * 1024U) noexcept {}
+        static inline void disableThreadBufferedSink() noexcept {}
+        static inline void enableAsyncSink(std::size_t = 16U * 1024U) noexcept {}
+        static inline void disableAsyncSink() noexcept {}
         static inline void setLogSink(LogSink&) noexcept {}
         static inline void resetLogSink() noexcept {}
     };
 
- #ifndef SCOPE_TIMER
+#ifndef SCOPE_TIMER
 #define SCOPE_TIMER(...) \
     do { (void)sizeof(#__VA_ARGS__); } while(0)
 #endif

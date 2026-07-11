@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    name: GCC 15 • Build • Test • Coverage • Sonar
+    name: GCC 15 • Build • Test • Coverage • Main-only Sonar
     runs-on: ubuntu-latest
 
     # Use a container that already has GCC 15
@@ -35,11 +35,11 @@ jobs:
       CTEST_OUTPUT_ON_FAILURE: "1"
 
     steps:
-      - name: Install prerequisites (cmake, ninja, coverage tools, valgrind, git, ca-certs, unzip, python3, java)
+      - name: Install build prerequisites
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake ninja-build gcovr lcov valgrind git ca-certificates unzip jq python3 default-jre-headless
+            cmake ninja-build gcovr lcov valgrind git ca-certificates python3
           update-ca-certificates
 
       - name: Checkout
@@ -52,25 +52,45 @@ jobs:
           gcc --version
           g++ --version
           gcov --version || true
-          java -version
           ninja --version
           cmake --version
 
+      - name: Check main-branch Sonar credentials
+        id: sonar
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [[ -n "${SONAR_TOKEN}" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Install Sonar prerequisites
+        if: steps.sonar.outputs.enabled == 'true'
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y unzip default-jre-headless
+
       - name: Install Sonar Build Wrapper
+        if: steps.sonar.outputs.enabled == 'true'
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2
 
       # Equivalent to: rm -rf build && cmake -S . -B build
       - name: Configure (CMake • Debug • Ninja • GCC 15)
         env:
-          CC: gcc
           CXX: g++
         run: |
+          sonar_enabled=OFF
+          if [[ "${{ steps.sonar.outputs.enabled }}" == "true" ]]; then
+            sonar_enabled=ON
+          fi
           rm -rf build "${BUILD_WRAPPER_OUT_DIR}"
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DENABLE_SONAR=ON \
-            -DCMAKE_C_COMPILER="${CC}" \
+            -DENABLE_COVERAGE=ON \
+            -DENABLE_SONAR="${sonar_enabled}" \
             -DCMAKE_CXX_COMPILER="${CXX}"
 
       # Equivalent to: cmake --build build -j
@@ -80,6 +100,7 @@ jobs:
 
       # Equivalent to: cmake --build build --target sonar_bw -j
       - name: Build (CMake target sonar_bw wrapped by build-wrapper)
+        if: steps.sonar.outputs.enabled == 'true'
         run: |
           cmake --build build --target sonar_bw -j"$(nproc)"
         env:
@@ -102,6 +123,7 @@ jobs:
 
       # Equivalent to: sonar-scanner
       - name: SonarQube Scan
+        if: steps.sonar.outputs.enabled == 'true'
         uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

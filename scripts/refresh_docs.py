@@ -21,6 +21,9 @@ BUILD_TAIL_LINES = 60
 TEST_LOG_HEAD_LINES = 24
 BUILD_REVIEW_CONFIGURE_CMD = "cmake -S . -B build-review"
 BASH_FENCE = "```bash"
+MANAGED_BUILD_DIR_NAME = "docs-refresh"
+MANAGED_BUILD_MARKER = ".scopetimer-docs-build"
+MANAGED_BUILD_MARKER_CONTENT = "ScopeTimer managed docs build directory\n"
 
 FORMAT_SECTIONS = [
     ("Testing with default elapsed time formatting", None),
@@ -35,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=str(repo_root))
+    parser.add_argument("--managed-root", required=True)
     parser.add_argument("--docs-build-dir", required=True)
     parser.add_argument("--build-doc", required=True)
     parser.add_argument("--tests-doc", required=True)
@@ -96,24 +100,55 @@ def remove_tree(path: Path) -> None:
         time.sleep(0.2 * (attempt + 1))
 
 
+def prepare_managed_build_dir(
+    path: Path,
+    managed_root: Path,
+    repo_root: Path,
+) -> None:
+    """Reset only the marker-owned docs build directory under a safe build root."""
+    resolved_path = path.resolve()
+    resolved_root = managed_root.resolve()
+    resolved_repo = repo_root.resolve()
+    filesystem_root = Path(resolved_root.anchor)
+
+    if resolved_root in (filesystem_root, Path.home().resolve(), resolved_repo):
+        raise RuntimeError(f"Refusing unsafe managed build root: {resolved_root}")
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing symlinked docs build directory: {path}")
+
+    expected_path = (resolved_root / MANAGED_BUILD_DIR_NAME).resolve()
+    if resolved_path != expected_path:
+        raise RuntimeError(
+            "Docs build directory must be the managed child "
+            f"{expected_path}, got {resolved_path}"
+        )
+
+    marker = resolved_path / MANAGED_BUILD_MARKER
+    if resolved_path.exists():
+        if not resolved_path.is_dir():
+            raise RuntimeError(f"Docs build path is not a directory: {resolved_path}")
+        if marker.is_symlink() or not marker.is_file():
+            raise RuntimeError(
+                f"Refusing to remove unowned docs build directory: {resolved_path}"
+            )
+        if marker.read_text(encoding="utf-8") != MANAGED_BUILD_MARKER_CONTENT:
+            raise RuntimeError(
+                f"Refusing to remove docs build directory with invalid marker: {resolved_path}"
+            )
+        remove_tree(resolved_path)
+
+    resolved_path.mkdir(parents=True, exist_ok=False)
+    (resolved_path / MANAGED_BUILD_MARKER).write_text(
+        MANAGED_BUILD_MARKER_CONTENT,
+        encoding="utf-8",
+    )
+
+
 def refresh_build_doc(
     repo_root: Path,
     docs_build_dir: Path,
     build_doc: Path,
 ) -> None:
-    remove_tree(docs_build_dir)
-
-    include_sonar = bool(os.environ.get("SONAR_TOKEN"))
-    sonar_configure_flag = "-DENABLE_SONAR=ON" if include_sonar else "-DENABLE_SONAR=OFF"
-    configure_cmd = [
-        "cmake",
-        "-S",
-        ".",
-        "-B",
-        relative_display_path(docs_build_dir, repo_root),
-        "-DAUTO_REFRESH_DOCS=OFF",
-        sonar_configure_flag,
-    ]
     actual_configure_cmd = [
         "cmake",
         "-S",
@@ -121,51 +156,26 @@ def refresh_build_doc(
         "-B",
         str(docs_build_dir),
         "-DAUTO_REFRESH_DOCS=OFF",
-        sonar_configure_flag,
+        "-DENABLE_COVERAGE=OFF",
+        "-DENABLE_SONAR=OFF",
     ]
-    build_cmd = ["cmake", "--build", relative_display_path(docs_build_dir, repo_root), "-j"]
     actual_build_cmd = ["cmake", "--build", str(docs_build_dir), "-j"]
-    test_cmd = [
-        "ctest",
-        "--test-dir",
-        relative_display_path(docs_build_dir, repo_root),
-        "--output-on-failure",
-    ]
     actual_test_cmd = ["ctest", "--test-dir", str(docs_build_dir), "--output-on-failure"]
-    sonar_cmd = [
-        "cmake",
-        "--build",
-        relative_display_path(docs_build_dir, repo_root),
-        "--target",
-        "sonar_scan",
-    ]
-    actual_sonar_cmd = ["cmake", "--build", str(docs_build_dir), "--target", "sonar_scan"]
-
     log_parts = []
     log_parts.append(run_command(actual_configure_cmd, cwd=repo_root).stdout)
     log_parts.append(run_command(actual_build_cmd, cwd=repo_root).stdout)
     log_parts.append(run_command(actual_test_cmd, cwd=repo_root).stdout)
 
-    if include_sonar:
-        sonar_run = run_command(actual_sonar_cmd, cwd=repo_root, check=False)
-        log_parts.append(sonar_run.stdout)
-    log_text = "".join(log_parts).strip()
+    log_text = "".join(log_parts).replace(str(repo_root), ".").strip()
     log_lines = log_text.splitlines()
     head = "\n".join(log_lines[:BUILD_HEAD_LINES])
     tail = "\n".join(log_lines[-BUILD_TAIL_LINES:]) if len(log_lines) > BUILD_HEAD_LINES else ""
 
-    composite_cmd = [
-        f"> rm -rf {relative_display_path(docs_build_dir, repo_root)} ./build-docs.log",
-        f"> {{ {' '.join(configure_cmd)} && \\",
-        f"  {' '.join(build_cmd)} && \\",
-        f"  {' '.join(test_cmd)}"
-        + (" && \\" if include_sonar else ";")
-    ]
-    if include_sonar:
-        composite_cmd.append(f"  {' '.join(sonar_cmd)}; }} > ./build-docs.log 2>&1")
-    else:
-        composite_cmd[-1] = composite_cmd[-1][:-1]
-        composite_cmd.append("} > ./build-docs.log 2>&1")
+    managed_refresh_cmd = (
+        "> cmake --build "
+        f"{relative_display_path(docs_build_dir.parent, repo_root)} "
+        "--target docs_refresh"
+    )
 
     lines = [
         "<!-- Generated automatically by scripts/refresh_docs.py -->",
@@ -181,11 +191,13 @@ def refresh_build_doc(
         "- [TESTS.md](TESTS.md) for log-format examples and summary output",
         "- [BENCHMARK.md](BENCHMARK.md) for the latest benchmark snapshot",
         "",
-        "`coverage` and `sonar_scan` require `gcovr`. `sonar_scan` also needs",
+        "`coverage` and `sonar_scan` require `gcovr` and a build configured",
+        "with `-DENABLE_COVERAGE=ON`. `sonar_scan` also needs",
         "`SONAR_TOKEN`, access to your SonarCloud or SonarQube server, and a",
         "build configured with `-DENABLE_SONAR=ON`. It passes the active CMake",
         "build directory through to the scanner so out-of-tree builds analyze",
-        "the right artifacts.",
+        "the right artifacts. To stay within the free-tier branch limit, both",
+        "the local target and GitHub Actions restrict Sonar scans to `main`.",
         "",
         "`leak_check` runs `scopetimer_tests` under the native leak detector",
         "for the current platform: `leaks` on macOS and `valgrind` on Linux.",
@@ -221,7 +233,7 @@ def refresh_build_doc(
         "cmake --build build-review --target demo_benchmark_matrix",
         "```",
         "",
-        "These targets configure a dedicated `build-bench` tree with coverage",
+        "These targets configure a dedicated `<build-dir>/benchmark-build` tree with coverage",
         "disabled and maximum benchmark-only optimization flags enabled",
         "(default `-O3` on GCC/Clang and `/O2` on MSVC) without defining",
         "`NDEBUG`, then build and benchmark the `Benchmark` executable with",
@@ -237,17 +249,21 @@ def refresh_build_doc(
         "`demo_benchmark_matrix`, and the full history remains in",
         "`benchmarks/demo_benchmark_history.json`.",
         "",
+        "The generated transcript below is captured by the managed",
+        "`docs_refresh` target. Use that target so the ownership marker is",
+        "created before its nested build directory is replaced.",
+        "",
         "<!-- markdownlint-disable MD013 -->",
         "",
         BASH_FENCE,
-        *composite_cmd,
-        "> sed -n '1,120p' ./build-docs.log",
+        managed_refresh_cmd,
+        "> # Captured nested configure/build/test output:",
         head,
     ]
     if tail:
         lines.extend(
             [
-                "> tail -n 60 ./build-docs.log",
+                "> # Final 60 lines of the captured output:",
                 tail,
             ]
         )
@@ -375,10 +391,13 @@ def refresh_tests_doc(
 def main() -> int:
     args = parse_args()
     repo_root = Path(args.repo_root).resolve()
-    docs_build_dir = Path(args.docs_build_dir).resolve()
+    managed_root = Path(args.managed_root).resolve()
+    docs_build_dir_arg = Path(args.docs_build_dir).expanduser()
     build_doc = Path(args.build_doc).resolve()
     tests_doc = Path(args.tests_doc).resolve()
 
+    prepare_managed_build_dir(docs_build_dir_arg, managed_root, repo_root)
+    docs_build_dir = docs_build_dir_arg.resolve()
     refresh_build_doc(repo_root, docs_build_dir, build_doc)
     refresh_tests_doc(repo_root, docs_build_dir, tests_doc)
     return 0

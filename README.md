@@ -127,10 +127,15 @@ the macro arguments are expanded **before** token pasting.
   value, or if unset, leaves logging **enabled**. In **Release** builds
   (`NDEBUG` defined) this variable has no effect because `SCOPE_TIMER` calls
   compile to no-ops.
-- `SCOPE_TIMER_DIR` - Directory for `ScopeTimer.log` (default `/tmp`).
-- `SCOPE_TIMER_FLUSH_N` - Invoke the active sink flush hook every N lines
-  (default 4096, max 1,000,000). The default file sink uses unbuffered appends,
-  so this does not force disk durability.
+- `SCOPE_TIMER_DIR` - Existing, writable directory for `ScopeTimer.log`. The
+  default is `/tmp` on POSIX; on Windows, ScopeTimer uses `TEMP`, then `TMP`,
+  then the current directory. Logging is best-effort: ScopeTimer does not create
+  missing parent directories and silently drops a record if the file cannot be
+  opened.
+- `SCOPE_TIMER_FLUSH_N` - Invoke the direct default/custom sink flush hook every
+  N lines (default 4096, max 1,000,000). Thread-buffered and async modes flush
+  based on their byte threshold and teardown instead. The default file sink uses
+  unbuffered appends, so this does not force disk durability.
 - `SCOPE_TIMER_FORMAT` - Elapsed units: `SECONDS`, `MILLIS`, `MICROS`, or
   `NANOS` (case-insensitive). If unset/invalid, auto-selects a readable unit.
 - `SCOPE_TIMER_WALLTIME` - Set to `"OFF"`, `"FALSE"`, `"NO"`, or `"0"` to omit
@@ -175,6 +180,8 @@ as simple as:
 cmake_minimum_required(VERSION 3.16)
 project(MyApp LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 add_executable(my_app
     src/main.cpp
 )
@@ -183,6 +190,7 @@ target_compile_features(my_app PRIVATE cxx_std_17)
 target_include_directories(my_app PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/ScopeTimer/include
 )
+target_link_libraries(my_app PRIVATE Threads::Threads)
 ```
 
 Then in your code:
@@ -199,7 +207,7 @@ int main() {
 ### Non-CMake example ###
 
 ```bash
-g++ -std=c++17 -I./third_party/ScopeTimer/include src/main.cpp -o my_app
+g++ -std=c++17 -pthread -I./third_party/ScopeTimer/include src/main.cpp -o my_app
 ```
 
 ### Important build behavior ###
@@ -231,8 +239,10 @@ void bar(bool enabled) {
 ```cpp
 void hotPath() {
     SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(64 * 1024);
-    SCOPE_TIMER("hotPath");
-    // ... work ...
+    {
+        SCOPE_TIMER("hotPath");
+        // ... work ...
+    }
     SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
 }
 ```
@@ -253,8 +263,10 @@ toggle for every individual timer.
 ```cpp
 void fanOut() {
     SCOPE_TIMER_ENABLE_ASYNC_SINK(64 * 1024);
-    SCOPE_TIMER("fanOut");
-    // ... work ...
+    {
+        SCOPE_TIMER("fanOut");
+        // ... work ...
+    }
     SCOPE_TIMER_DISABLE_ASYNC_SINK();
 }
 ```
@@ -285,8 +297,10 @@ public:
 void emitToStdout() {
     CoutLogSink sink;
     ::xyzzy::scopetimer::ScopeTimer::setLogSink(sink);
-    SCOPE_TIMER("emitToStdout");
-    // ... work ...
+    {
+        SCOPE_TIMER("emitToStdout");
+        // ... work ...
+    }
     ::xyzzy::scopetimer::ScopeTimer::resetLogSink();
 }
 ```
@@ -297,6 +311,9 @@ With a custom sink registered, direct timers write to it immediately, and the
 built-in buffered and async modes use it as their final output target too.
 A no-op implementation is also useful when you want to benchmark ScopeTimer's
 own overhead without measuring output I/O.
+Sink registration and mode changes are setup/teardown operations. Make sure
+profiled timers and worker threads have finished before changing or resetting a
+sink, and keep a custom sink alive until after `resetLogSink()` returns.
 
 ### Hot-path timing ###
 

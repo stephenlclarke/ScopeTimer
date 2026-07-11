@@ -11,11 +11,13 @@ See also:
 - [TESTS.md](TESTS.md) for log-format examples and summary output
 - [BENCHMARK.md](BENCHMARK.md) for the latest benchmark snapshot
 
-`coverage` and `sonar_scan` require `gcovr`. `sonar_scan` also needs
+`coverage` and `sonar_scan` require `gcovr` and a build configured
+with `-DENABLE_COVERAGE=ON`. `sonar_scan` also needs
 `SONAR_TOKEN`, access to your SonarCloud or SonarQube server, and a
 build configured with `-DENABLE_SONAR=ON`. It passes the active CMake
 build directory through to the scanner so out-of-tree builds analyze
-the right artifacts.
+the right artifacts. To stay within the free-tier branch limit, both
+the local target and GitHub Actions restrict Sonar scans to `main`.
 
 `leak_check` runs `scopetimer_tests` under the native leak detector
 for the current platform: `leaks` on macOS and `valgrind` on Linux.
@@ -51,7 +53,7 @@ cmake --build build-review --target demo_benchmark
 cmake --build build-review --target demo_benchmark_matrix
 ```
 
-These targets configure a dedicated `build-bench` tree with coverage
+These targets configure a dedicated `<build-dir>/benchmark-build` tree with coverage
 disabled and maximum benchmark-only optimization flags enabled
 (default `-O3` on GCC/Clang and `/O2` on MSVC) without defining
 `NDEBUG`, then build and benchmark the `Benchmark` executable with
@@ -67,86 +69,94 @@ The human-readable benchmark results now live in
 `demo_benchmark_matrix`, and the full history remains in
 `benchmarks/demo_benchmark_history.json`.
 
+The generated transcript below is captured by the managed
+`docs_refresh` target. Use that target so the ownership marker is
+created before its nested build directory is replaced.
+
 <!-- markdownlint-disable MD013 -->
 
 ```bash
-> rm -rf ./build-docs ./build-docs.log
-> { cmake -S . -B ./build-docs -DAUTO_REFRESH_DOCS=OFF -DENABLE_SONAR=OFF && \
-  cmake --build ./build-docs -j && \
-  ctest --test-dir ./build-docs --output-on-failure
-} > ./build-docs.log 2>&1
-> sed -n '1,120p' ./build-docs.log
--- The CXX compiler identification is GNU 15.2.0
--- Checking whether CXX compiler has -isysroot
--- Checking whether CXX compiler has -isysroot - yes
--- Checking whether CXX compiler supports OSX deployment target flag
--- Checking whether CXX compiler supports OSX deployment target flag - yes
+> cmake --build ./build-review --target docs_refresh
+> # Captured nested configure/build/test output:
+-- The CXX compiler identification is AppleClang 21.0.0.21000101
 -- Detecting CXX compiler ABI info
 -- Detecting CXX compiler ABI info - done
--- Check for working CXX compiler: /opt/homebrew/bin/g++-15 - skipped
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
 -- Detecting CXX compile features
 -- Detecting CXX compile features - done
 -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
 -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
 -- Found Threads: TRUE
--- Using GCOV from environment: /opt/homebrew/bin/gcov-15
--- Configuring done (3.6s)
--- Generating done (0.1s)
--- Build files have been written to: /Users/sclarke/github/ScopeTimer/build-docs
-[ 16%] Building CXX object CMakeFiles/Demo.dir/example/Demo.cpp.o
-[ 33%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
+-- Configuring done (0.6s)
+-- Generating done (0.0s)
+-- Build files have been written to: ./build-review/docs-refresh
 [ 50%] Building CXX object CMakeFiles/scopetimer_tests.dir/test/ScopeTimerTest.cpp.o
-[ 66%] Linking CXX executable Benchmark
-[ 83%] Linking CXX executable Demo
-[ 83%] Built target Benchmark
-[ 83%] Built target Demo
+[ 50%] Building CXX object CMakeFiles/scopetimer_release_compile_test.dir/test/ScopeTimerReleaseCompileTest.cpp.o
+[ 50%] Building CXX object CMakeFiles/Demo.dir/example/Demo.cpp.o
+[ 50%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
+[ 62%] Linking CXX executable scopetimer_release_compile_test
+[ 62%] Built target scopetimer_release_compile_test
+[ 75%] Linking CXX executable Benchmark
+[ 87%] Linking CXX executable Demo
+[ 87%] Built target Benchmark
+[ 87%] Built target Demo
 [100%] Linking CXX executable scopetimer_tests
 [100%] Built target scopetimer_tests
-Test project /Users/sclarke/github/ScopeTimer/build-docs
+Test project ./build-review/docs-refresh
       Start  1: run_demo
- 1/20 Test  #1: run_demo ............................   Passed    0.54 sec
+ 1/25 Test  #1: run_demo ...............................   Passed    0.18 sec
       Start  2: run_demo_iterations
- 2/20 Test  #2: run_demo_iterations .................   Passed    0.06 sec
+ 2/25 Test  #2: run_demo_iterations ....................   Passed    0.04 sec
       Start  3: run_demo_iterations_zero_flag
- 3/20 Test  #3: run_demo_iterations_zero_flag .......   Passed    0.07 sec
+ 3/25 Test  #3: run_demo_iterations_zero_flag ..........   Passed    0.00 sec
       Start  4: run_demo_positional_iterations
- 4/20 Test  #4: run_demo_positional_iterations ......   Passed    0.13 sec
+ 4/25 Test  #4: run_demo_positional_iterations .........   Passed    0.10 sec
       Start  5: run_demo_positional_zero
- 5/20 Test  #5: run_demo_positional_zero ............   Passed    0.07 sec
+ 5/25 Test  #5: run_demo_positional_zero ...............   Passed    0.00 sec
       Start  6: run_demo_help
- 6/20 Test  #6: run_demo_help .......................   Passed    0.04 sec
+ 6/25 Test  #6: run_demo_help ..........................   Passed    0.00 sec
       Start  7: run_benchmark_default
- 7/20 Test  #7: run_benchmark_default ...............   Passed    0.33 sec
+ 7/25 Test  #7: run_benchmark_default ..................   Passed    0.12 sec
       Start  8: run_benchmark_iterations_zero
- 8/20 Test  #8: run_benchmark_iterations_zero .......   Passed    0.04 sec
+ 8/25 Test  #8: run_benchmark_iterations_zero ..........   Passed    0.00 sec
       Start  9: run_benchmark_positional_zero
- 9/20 Test  #9: run_benchmark_positional_zero .......   Passed    0.04 sec
+ 9/25 Test  #9: run_benchmark_positional_zero ..........   Passed    0.00 sec
       Start 10: run_benchmark_help
-10/20 Test #10: run_benchmark_help ..................   Passed    0.02 sec
-      Start 11: run_benchmark_invalid_scenario
-11/20 Test #11: run_benchmark_invalid_scenario ......   Passed    0.02 sec
-      Start 12: run_benchmark_buffered_hotpath
-12/20 Test #12: run_benchmark_buffered_hotpath ......   Passed    0.03 sec
-      Start 13: run_benchmark_buffered_fast_alias
-13/20 Test #13: run_benchmark_buffered_fast_alias ...   Passed    0.03 sec
-      Start 14: run_benchmark_async
-14/20 Test #14: run_benchmark_async .................   Passed    0.03 sec
-      Start 15: run_benchmark_null
-15/20 Test #15: run_benchmark_null ..................   Passed    0.03 sec
-      Start 16: run_benchmark_null_standard_alias
-16/20 Test #16: run_benchmark_null_standard_alias ...   Passed    0.03 sec
-      Start 17: run_benchmark_noop_alias
-17/20 Test #17: run_benchmark_noop_alias ............   Passed    0.03 sec
-      Start 18: run_benchmark_async_invalid_env
-18/20 Test #18: run_benchmark_async_invalid_env .....   Passed    0.03 sec
-      Start 19: run_benchmark_out_of_range_env
-19/20 Test #19: run_benchmark_out_of_range_env ......   Passed    0.03 sec
-      Start 20: run_scopetimer_tests
-20/20 Test #20: run_scopetimer_tests ................   Passed    1.49 sec
+10/25 Test #10: run_benchmark_help .....................   Passed    0.00 sec
+      Start 11: run_benchmark_instrumentation_status
+11/25 Test #11: run_benchmark_instrumentation_status ...   Passed    0.00 sec
+      Start 12: run_benchmark_invalid_scenario
+12/25 Test #12: run_benchmark_invalid_scenario .........   Passed    0.00 sec
+      Start 13: run_benchmark_buffered_hotpath
+13/25 Test #13: run_benchmark_buffered_hotpath .........   Passed    0.01 sec
+      Start 14: run_benchmark_buffered_fast_alias
+14/25 Test #14: run_benchmark_buffered_fast_alias ......   Passed    0.01 sec
+      Start 15: run_benchmark_async
+15/25 Test #15: run_benchmark_async ....................   Passed    0.01 sec
+      Start 16: run_benchmark_null
+16/25 Test #16: run_benchmark_null .....................   Passed    0.00 sec
+      Start 17: run_benchmark_null_standard_alias
+17/25 Test #17: run_benchmark_null_standard_alias ......   Passed    0.00 sec
+      Start 18: run_benchmark_noop_alias
+18/25 Test #18: run_benchmark_noop_alias ...............   Passed    0.01 sec
+      Start 19: run_benchmark_async_invalid_env
+19/25 Test #19: run_benchmark_async_invalid_env ........   Passed    0.00 sec
+      Start 20: run_benchmark_out_of_range_env
+20/25 Test #20: run_benchmark_out_of_range_env .........   Passed    0.00 sec
+      Start 21: run_scopetimer_tests
+21/25 Test #21: run_scopetimer_tests ...................   Passed    0.69 sec
+      Start 22: run_scopetimer_release_compile_test
+22/25 Test #22: run_scopetimer_release_compile_test ....   Passed    0.12 sec
+      Start 23: run_benchmark_tool_tests
+23/25 Test #23: run_benchmark_tool_tests ...............   Passed    0.08 sec
+      Start 24: run_refresh_docs_tests
+24/25 Test #24: run_refresh_docs_tests .................   Passed    0.06 sec
+      Start 25: run_sonar_branch_guard_tests
+25/25 Test #25: run_sonar_branch_guard_tests ...........   Passed    0.77 sec
 
-100% tests passed, 0 tests failed out of 20
+100% tests passed out of 25
 
-Total Test time (real) =   3.09 sec
+Total Test time (real) =   2.23 sec
 ```
 
 <!-- markdownlint-enable MD013 -->
