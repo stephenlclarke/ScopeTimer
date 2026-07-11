@@ -16,150 +16,150 @@ See also:
 
 ```bash
 > rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. ./build-review/docs-refresh/Demo --iterations=1 >/dev/null 2>&1; sed -n '1,24p' ./ScopeTimer.log
-[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 19:19:10.293 | end=2026-07-11 19:19:10.293 | elapsed=2.333us
-[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 19:19:10.294 | end=2026-07-11 19:19:10.297 | elapsed=3.132ms
-[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.298 | end=2026-07-11 19:19:10.300 | elapsed=1.892ms
-[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.300 | end=2026-07-11 19:19:10.302 | elapsed=2.515ms
-[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.297 | end=2026-07-11 19:19:10.303 | elapsed=6.333ms
-[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.306 | end=2026-07-11 19:19:10.307 | elapsed=1.132ms
-[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.305 | end=2026-07-11 19:19:10.307 | elapsed=2.152ms
-[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.304 | end=2026-07-11 19:19:10.307 | elapsed=3.049ms
-[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.303 | end=2026-07-11 19:19:10.307 | elapsed=3.818ms
-[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 19:19:10.308 | end=2026-07-11 19:19:10.310 | elapsed=1.517ms
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.310 | end=2026-07-11 19:19:10.310 | elapsed=384.792us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.310 | end=2026-07-11 19:19:10.311 | elapsed=380.125us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.311 | end=2026-07-11 19:19:10.311 | elapsed=381.208us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.311 | end=2026-07-11 19:19:10.311 | elapsed=379.625us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.311 | end=2026-07-11 19:19:10.312 | elapsed=379.625us
-[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.310 | end=2026-07-11 19:19:10.312 | elapsed=1.933ms
-[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 19:19:10.312 | end=2026-07-11 19:19:10.312 | elapsed=636.167us
-[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 19:19:10.312 | end=2026-07-11 19:19:10.313 | elapsed=684.375us
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.313 | end=2026-07-11 19:19:10.313 | elapsed=192.625us
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.313 | end=2026-07-11 19:19:10.313 | elapsed=193.250us
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.313 | end=2026-07-11 19:19:10.313 | elapsed=194.500us
-[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.313 | end=2026-07-11 19:19:10.313 | elapsed=595.208us
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.313 | end=2026-07-11 19:19:10.313 | elapsed=154.750us
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.313 | end=2026-07-11 19:19:10.314 | elapsed=155.166us
+[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 20:03:43.394 | end=2026-07-11 20:03:43.394 | elapsed=2.292us
+[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 20:03:43.394 | end=2026-07-11 20:03:43.397 | elapsed=3.772ms
+[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.399 | end=2026-07-11 20:03:43.401 | elapsed=2.263ms
+[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.401 | end=2026-07-11 20:03:43.405 | elapsed=3.765ms
+[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.397 | end=2026-07-11 20:03:43.406 | elapsed=8.344ms
+[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.409 | end=2026-07-11 20:03:43.410 | elapsed=1.355ms
+[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.408 | end=2026-07-11 20:03:43.410 | elapsed=2.580ms
+[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.407 | end=2026-07-11 20:03:43.410 | elapsed=3.642ms
+[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.406 | end=2026-07-11 20:03:43.410 | elapsed=4.551ms
+[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 20:03:43.412 | end=2026-07-11 20:03:43.414 | elapsed=1.808ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.414 | end=2026-07-11 20:03:43.414 | elapsed=457.292us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.414 | end=2026-07-11 20:03:43.415 | elapsed=454.708us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.415 | end=2026-07-11 20:03:43.415 | elapsed=455.500us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.415 | end=2026-07-11 20:03:43.416 | elapsed=455.416us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.416 | end=2026-07-11 20:03:43.416 | elapsed=457.792us
+[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.414 | end=2026-07-11 20:03:43.416 | elapsed=2.327ms
+[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 20:03:43.416 | end=2026-07-11 20:03:43.417 | elapsed=761.167us
+[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 20:03:43.416 | end=2026-07-11 20:03:43.417 | elapsed=809.708us
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.417 | end=2026-07-11 20:03:43.417 | elapsed=233.083us
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.417 | end=2026-07-11 20:03:43.418 | elapsed=228.708us
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.418 | end=2026-07-11 20:03:43.418 | elapsed=233.125us
+[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.417 | end=2026-07-11 20:03:43.418 | elapsed=713.042us
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.418 | end=2026-07-11 20:03:43.418 | elapsed=188.208us
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.418 | end=2026-07-11 20:03:43.418 | elapsed=183.708us
 ```
 
 ## Testing with elapsed time formatted in seconds
 
 ```bash
 > rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=SECONDS ./build-review/docs-refresh/Demo --iterations=1 >/dev/null 2>&1; sed -n '1,24p' ./ScopeTimer.log
-[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 19:19:10.333 | end=2026-07-11 19:19:10.333 | elapsed=0.000s
-[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 19:19:10.333 | end=2026-07-11 19:19:10.336 | elapsed=0.003s
-[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.337 | end=2026-07-11 19:19:10.339 | elapsed=0.001s
-[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.339 | end=2026-07-11 19:19:10.342 | elapsed=0.003s
-[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.336 | end=2026-07-11 19:19:10.343 | elapsed=0.006s
-[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.346 | end=2026-07-11 19:19:10.347 | elapsed=0.001s
-[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.345 | end=2026-07-11 19:19:10.347 | elapsed=0.002s
-[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.344 | end=2026-07-11 19:19:10.347 | elapsed=0.003s
-[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.343 | end=2026-07-11 19:19:10.347 | elapsed=0.003s
-[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 19:19:10.348 | end=2026-07-11 19:19:10.350 | elapsed=0.001s
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.350 | end=2026-07-11 19:19:10.350 | elapsed=0.000s
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.350 | end=2026-07-11 19:19:10.351 | elapsed=0.000s
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.351 | end=2026-07-11 19:19:10.351 | elapsed=0.000s
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.351 | end=2026-07-11 19:19:10.351 | elapsed=0.000s
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.351 | end=2026-07-11 19:19:10.352 | elapsed=0.000s
-[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.350 | end=2026-07-11 19:19:10.352 | elapsed=0.001s
-[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 19:19:10.352 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 19:19:10.352 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.353 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.353 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.353 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.353 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.353 | end=2026-07-11 19:19:10.353 | elapsed=0.000s
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.353 | end=2026-07-11 19:19:10.354 | elapsed=0.000s
+[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 20:03:43.441 | end=2026-07-11 20:03:43.441 | elapsed=0.000s
+[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 20:03:43.441 | end=2026-07-11 20:03:43.445 | elapsed=0.003s
+[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.446 | end=2026-07-11 20:03:43.448 | elapsed=0.002s
+[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.448 | end=2026-07-11 20:03:43.452 | elapsed=0.003s
+[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.445 | end=2026-07-11 20:03:43.453 | elapsed=0.008s
+[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.456 | end=2026-07-11 20:03:43.458 | elapsed=0.001s
+[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.455 | end=2026-07-11 20:03:43.458 | elapsed=0.002s
+[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.454 | end=2026-07-11 20:03:43.458 | elapsed=0.003s
+[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.453 | end=2026-07-11 20:03:43.458 | elapsed=0.004s
+[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 20:03:43.459 | end=2026-07-11 20:03:43.461 | elapsed=0.001s
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.461 | end=2026-07-11 20:03:43.462 | elapsed=0.000s
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.462 | end=2026-07-11 20:03:43.462 | elapsed=0.000s
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.462 | end=2026-07-11 20:03:43.463 | elapsed=0.000s
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.463 | end=2026-07-11 20:03:43.463 | elapsed=0.000s
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.463 | end=2026-07-11 20:03:43.463 | elapsed=0.000s
+[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.461 | end=2026-07-11 20:03:43.463 | elapsed=0.002s
+[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 20:03:43.464 | end=2026-07-11 20:03:43.464 | elapsed=0.000s
+[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 20:03:43.463 | end=2026-07-11 20:03:43.464 | elapsed=0.000s
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.464 | end=2026-07-11 20:03:43.465 | elapsed=0.000s
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.465 | end=2026-07-11 20:03:43.465 | elapsed=0.000s
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.465 | end=2026-07-11 20:03:43.465 | elapsed=0.000s
+[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.464 | end=2026-07-11 20:03:43.465 | elapsed=0.000s
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.465 | end=2026-07-11 20:03:43.465 | elapsed=0.000s
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.465 | end=2026-07-11 20:03:43.465 | elapsed=0.000s
 ```
 
 ## Testing with elapsed time formatted in millis
 
 ```bash
 > rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=MILLIS ./build-review/docs-refresh/Demo --iterations=1 >/dev/null 2>&1; sed -n '1,24p' ./ScopeTimer.log
-[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 19:19:10.374 | end=2026-07-11 19:19:10.374 | elapsed=0.002ms
-[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 19:19:10.374 | end=2026-07-11 19:19:10.377 | elapsed=3.137ms
-[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.378 | end=2026-07-11 19:19:10.380 | elapsed=1.883ms
-[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.380 | end=2026-07-11 19:19:10.383 | elapsed=3.074ms
-[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.377 | end=2026-07-11 19:19:10.384 | elapsed=6.888ms
-[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.387 | end=2026-07-11 19:19:10.388 | elapsed=1.142ms
-[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.386 | end=2026-07-11 19:19:10.388 | elapsed=2.168ms
-[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.385 | end=2026-07-11 19:19:10.388 | elapsed=3.063ms
-[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.384 | end=2026-07-11 19:19:10.388 | elapsed=3.827ms
-[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 19:19:10.389 | end=2026-07-11 19:19:10.391 | elapsed=1.511ms
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.391 | end=2026-07-11 19:19:10.391 | elapsed=0.380ms
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.391 | end=2026-07-11 19:19:10.392 | elapsed=0.379ms
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.392 | end=2026-07-11 19:19:10.392 | elapsed=0.379ms
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.392 | end=2026-07-11 19:19:10.392 | elapsed=0.380ms
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.392 | end=2026-07-11 19:19:10.393 | elapsed=0.380ms
-[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.391 | end=2026-07-11 19:19:10.393 | elapsed=1.937ms
-[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 19:19:10.393 | end=2026-07-11 19:19:10.393 | elapsed=0.643ms
-[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 19:19:10.393 | end=2026-07-11 19:19:10.393 | elapsed=0.732ms
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.393 | end=2026-07-11 19:19:10.394 | elapsed=0.196ms
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.394 | end=2026-07-11 19:19:10.394 | elapsed=0.196ms
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.394 | end=2026-07-11 19:19:10.394 | elapsed=0.192ms
-[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.393 | end=2026-07-11 19:19:10.394 | elapsed=0.608ms
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.394 | end=2026-07-11 19:19:10.394 | elapsed=0.154ms
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.394 | end=2026-07-11 19:19:10.394 | elapsed=0.154ms
+[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 20:03:43.487 | end=2026-07-11 20:03:43.487 | elapsed=0.002ms
+[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 20:03:43.487 | end=2026-07-11 20:03:43.491 | elapsed=3.758ms
+[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.492 | end=2026-07-11 20:03:43.495 | elapsed=2.256ms
+[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.495 | end=2026-07-11 20:03:43.498 | elapsed=3.756ms
+[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.491 | end=2026-07-11 20:03:43.499 | elapsed=8.306ms
+[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.502 | end=2026-07-11 20:03:43.504 | elapsed=1.355ms
+[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.501 | end=2026-07-11 20:03:43.504 | elapsed=2.573ms
+[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.500 | end=2026-07-11 20:03:43.504 | elapsed=3.630ms
+[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.499 | end=2026-07-11 20:03:43.504 | elapsed=4.538ms
+[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 20:03:43.506 | end=2026-07-11 20:03:43.507 | elapsed=1.805ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.507 | end=2026-07-11 20:03:43.508 | elapsed=0.455ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.508 | end=2026-07-11 20:03:43.508 | elapsed=0.456ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.508 | end=2026-07-11 20:03:43.509 | elapsed=0.455ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.509 | end=2026-07-11 20:03:43.509 | elapsed=0.454ms
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.509 | end=2026-07-11 20:03:43.510 | elapsed=0.454ms
+[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.507 | end=2026-07-11 20:03:43.510 | elapsed=2.307ms
+[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 20:03:43.510 | end=2026-07-11 20:03:43.511 | elapsed=0.761ms
+[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 20:03:43.510 | end=2026-07-11 20:03:43.511 | elapsed=0.804ms
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.511 | end=2026-07-11 20:03:43.511 | elapsed=0.230ms
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.511 | end=2026-07-11 20:03:43.511 | elapsed=0.230ms
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.511 | end=2026-07-11 20:03:43.511 | elapsed=0.231ms
+[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.511 | end=2026-07-11 20:03:43.511 | elapsed=0.711ms
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.511 | end=2026-07-11 20:03:43.512 | elapsed=0.183ms
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.512 | end=2026-07-11 20:03:43.512 | elapsed=0.187ms
 ```
 
 ## Testing with elapsed time formatted in micros
 
 ```bash
 > rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=MICROS ./build-review/docs-refresh/Demo --iterations=1 >/dev/null 2>&1; sed -n '1,24p' ./ScopeTimer.log
-[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 19:19:10.415 | end=2026-07-11 19:19:10.415 | elapsed=2.458us
-[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 19:19:10.415 | end=2026-07-11 19:19:10.418 | elapsed=3139.958us
-[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.420 | end=2026-07-11 19:19:10.421 | elapsed=1894.334us
-[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.421 | end=2026-07-11 19:19:10.425 | elapsed=3139.709us
-[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.418 | end=2026-07-11 19:19:10.425 | elapsed=6971.125us
-[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.428 | end=2026-07-11 19:19:10.429 | elapsed=1136.291us
-[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.427 | end=2026-07-11 19:19:10.429 | elapsed=2160.208us
-[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.426 | end=2026-07-11 19:19:10.429 | elapsed=3060.667us
-[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.425 | end=2026-07-11 19:19:10.429 | elapsed=3835.166us
-[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 19:19:10.431 | end=2026-07-11 19:19:10.432 | elapsed=1514.875us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.432 | end=2026-07-11 19:19:10.433 | elapsed=381.500us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.433 | end=2026-07-11 19:19:10.433 | elapsed=380.750us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.433 | end=2026-07-11 19:19:10.433 | elapsed=380.166us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.433 | end=2026-07-11 19:19:10.434 | elapsed=380.958us
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.434 | end=2026-07-11 19:19:10.434 | elapsed=379.334us
-[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.432 | end=2026-07-11 19:19:10.434 | elapsed=1929.583us
-[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 19:19:10.434 | end=2026-07-11 19:19:10.435 | elapsed=637.917us
-[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 19:19:10.434 | end=2026-07-11 19:19:10.435 | elapsed=706.875us
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.435 | end=2026-07-11 19:19:10.435 | elapsed=197.334us
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.435 | end=2026-07-11 19:19:10.435 | elapsed=192.250us
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.435 | end=2026-07-11 19:19:10.435 | elapsed=194.083us
-[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.435 | end=2026-07-11 19:19:10.435 | elapsed=607.791us
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.436 | end=2026-07-11 19:19:10.436 | elapsed=155.083us
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.436 | end=2026-07-11 19:19:10.436 | elapsed=154.917us
+[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 20:03:43.533 | end=2026-07-11 20:03:43.533 | elapsed=2.708us
+[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 20:03:43.534 | end=2026-07-11 20:03:43.537 | elapsed=3757.875us
+[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.539 | end=2026-07-11 20:03:43.541 | elapsed=2256.166us
+[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.541 | end=2026-07-11 20:03:43.545 | elapsed=3758.500us
+[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.537 | end=2026-07-11 20:03:43.546 | elapsed=8307.459us
+[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.549 | end=2026-07-11 20:03:43.550 | elapsed=1359.667us
+[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.548 | end=2026-07-11 20:03:43.550 | elapsed=2581.542us
+[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.547 | end=2026-07-11 20:03:43.550 | elapsed=3639.125us
+[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.546 | end=2026-07-11 20:03:43.550 | elapsed=4547.958us
+[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 20:03:43.552 | end=2026-07-11 20:03:43.554 | elapsed=1807.000us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.554 | end=2026-07-11 20:03:43.554 | elapsed=457.250us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.554 | end=2026-07-11 20:03:43.555 | elapsed=459.250us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.555 | end=2026-07-11 20:03:43.555 | elapsed=455.333us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.555 | end=2026-07-11 20:03:43.556 | elapsed=458.333us
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.556 | end=2026-07-11 20:03:43.556 | elapsed=458.834us
+[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.554 | end=2026-07-11 20:03:43.556 | elapsed=2333.000us
+[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 20:03:43.556 | end=2026-07-11 20:03:43.557 | elapsed=765.042us
+[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 20:03:43.556 | end=2026-07-11 20:03:43.557 | elapsed=810.125us
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.557 | end=2026-07-11 20:03:43.557 | elapsed=231.667us
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.557 | end=2026-07-11 20:03:43.557 | elapsed=229.916us
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.557 | end=2026-07-11 20:03:43.558 | elapsed=230.709us
+[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.557 | end=2026-07-11 20:03:43.558 | elapsed=709.500us
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.558 | end=2026-07-11 20:03:43.558 | elapsed=183.958us
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.558 | end=2026-07-11 20:03:43.558 | elapsed=186.625us
 ```
 
 ## Testing with elapsed time formatted in nanos
 
 ```bash
 > rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=NANOS ./build-review/docs-refresh/Demo --iterations=1 >/dev/null 2>&1; sed -n '1,24p' ./ScopeTimer.log
-[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 19:19:10.456 | end=2026-07-11 19:19:10.456 | elapsed=2708ns
-[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 19:19:10.457 | end=2026-07-11 19:19:10.460 | elapsed=3139958ns
-[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.461 | end=2026-07-11 19:19:10.463 | elapsed=1883000ns
-[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.463 | end=2026-07-11 19:19:10.466 | elapsed=3002958ns
-[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 19:19:10.460 | end=2026-07-11 19:19:10.467 | elapsed=6806791ns
-[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.469 | end=2026-07-11 19:19:10.470 | elapsed=1129917ns
-[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.468 | end=2026-07-11 19:19:10.470 | elapsed=2146166ns
-[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.467 | end=2026-07-11 19:19:10.470 | elapsed=3034125ns
-[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 19:19:10.467 | end=2026-07-11 19:19:10.470 | elapsed=3824625ns
-[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 19:19:10.472 | end=2026-07-11 19:19:10.473 | elapsed=1515166ns
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.473 | end=2026-07-11 19:19:10.474 | elapsed=380084ns
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.474 | end=2026-07-11 19:19:10.474 | elapsed=372584ns
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.474 | end=2026-07-11 19:19:10.475 | elapsed=381959ns
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.475 | end=2026-07-11 19:19:10.475 | elapsed=381042ns
-[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.475 | end=2026-07-11 19:19:10.475 | elapsed=380917ns
-[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 19:19:10.473 | end=2026-07-11 19:19:10.475 | elapsed=1929000ns
-[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 19:19:10.475 | end=2026-07-11 19:19:10.476 | elapsed=639417ns
-[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 19:19:10.475 | end=2026-07-11 19:19:10.476 | elapsed=691666ns
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.476 | end=2026-07-11 19:19:10.476 | elapsed=194125ns
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.476 | end=2026-07-11 19:19:10.476 | elapsed=192667ns
-[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.476 | end=2026-07-11 19:19:10.477 | elapsed=193125ns
-[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 19:19:10.476 | end=2026-07-11 19:19:10.477 | elapsed=603167ns
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.477 | end=2026-07-11 19:19:10.477 | elapsed=155917ns
-[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 19:19:10.477 | end=2026-07-11 19:19:10.477 | elapsed=158667ns
+[Demo::parseOptions] TID=001 | DemoOptions parseOptions(int, char **) | start=2026-07-11 20:03:43.580 | end=2026-07-11 20:03:43.580 | elapsed=2334ns
+[simpleWork] TID=001 | void simpleWork() | start=2026-07-11 20:03:43.580 | end=2026-07-11 20:03:43.583 | elapsed=3756625ns
+[nestedScopes:inner 1] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.585 | end=2026-07-11 20:03:43.587 | elapsed=2255666ns
+[nestedScopes:inner 2] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.587 | end=2026-07-11 20:03:43.591 | elapsed=3757625ns
+[nestedScopes:outer] TID=001 | void nestedScopes() | start=2026-07-11 20:03:43.584 | end=2026-07-11 20:03:43.592 | elapsed=8314750ns
+[multi:fourth] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.595 | end=2026-07-11 20:03:43.596 | elapsed=1354875ns
+[multi:third] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.594 | end=2026-07-11 20:03:43.596 | elapsed=2584000ns
+[multi:second] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.593 | end=2026-07-11 20:03:43.596 | elapsed=3648875ns
+[multi:first] TID=001 | void multipleTimersSameScope() | start=2026-07-11 20:03:43.592 | end=2026-07-11 20:03:43.596 | elapsed=4560708ns
+[conditionalWork] TID=001 | void conditionalWork(bool) | start=2026-07-11 20:03:43.598 | end=2026-07-11 20:03:43.600 | elapsed=1809292ns
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.600 | end=2026-07-11 20:03:43.600 | elapsed=458916ns
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.600 | end=2026-07-11 20:03:43.601 | elapsed=457792ns
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.601 | end=2026-07-11 20:03:43.601 | elapsed=455250ns
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.601 | end=2026-07-11 20:03:43.602 | elapsed=454083ns
+[loopedWork:iteration] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.602 | end=2026-07-11 20:03:43.602 | elapsed=455167ns
+[loopedWork:total] TID=001 | void loopedWork(int) | start=2026-07-11 20:03:43.600 | end=2026-07-11 20:03:43.602 | elapsed=2321250ns
+[threadedWork:worker] TID=002 | auto threadedWork(int)::(anonymous class)::operator()() const | start=2026-07-11 20:03:43.602 | end=2026-07-11 20:03:43.603 | elapsed=760459ns
+[threadedWork:total] TID=001 | void threadedWork(int) | start=2026-07-11 20:03:43.602 | end=2026-07-11 20:03:43.603 | elapsed=812625ns
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.603 | end=2026-07-11 20:03:43.603 | elapsed=229667ns
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.603 | end=2026-07-11 20:03:43.604 | elapsed=232292ns
+[bufferedSinkExample:iteration] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.604 | end=2026-07-11 20:03:43.604 | elapsed=230041ns
+[bufferedSinkExample] TID=001 | void bufferedSinkExample() | start=2026-07-11 20:03:43.603 | end=2026-07-11 20:03:43.604 | elapsed=709250ns
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.604 | end=2026-07-11 20:03:43.604 | elapsed=185250ns
+[asyncSinkExample:iteration] TID=001 | void asyncSinkExample() | start=2026-07-11 20:03:43.604 | end=2026-07-11 20:03:43.604 | elapsed=187917ns
 ```
 
 ## Summarise the logging
@@ -168,88 +168,88 @@ See also:
 > rm -f ./ScopeTimer.log; env SCOPE_TIMER_DIR=. SCOPE_TIMER_FORMAT=NANOS ./build-review/docs-refresh/Demo --iterations=1 >/dev/null 2>&1; scripts/process_scope_times.sh ./ScopeTimer.log | scripts/summarize_scope_times.sh
 ===== Summary (count / min / avg / max) =====
 [Demo::parseOptions]DemoOptions parseOptions(int, char **)
-  count=1  min=3us  avg=3us  max=3us  →
+  count=1  min=2us  avg=2us  max=2us  →
 
 [simpleWork]void simpleWork()
-  count=1  min=3.135ms  avg=3.135ms  max=3.135ms  →
+  count=1  min=3.757ms  avg=3.757ms  max=3.757ms  →
 
 [nestedScopes:inner 1]void nestedScopes()
-  count=1  min=1.894ms  avg=1.894ms  max=1.894ms  →
+  count=1  min=2.256ms  avg=2.256ms  max=2.256ms  →
 
 [nestedScopes:inner 2]void nestedScopes()
-  count=1  min=3.137ms  avg=3.137ms  max=3.137ms  →
+  count=1  min=3.761ms  avg=3.761ms  max=3.761ms  →
 
 [nestedScopes:outer]void nestedScopes()
-  count=1  min=6.962ms  avg=6.962ms  max=6.962ms  →
+  count=1  min=8.321ms  avg=8.321ms  max=8.321ms  →
 
 [multi:fourth]void multipleTimersSameScope()
-  count=1  min=1.137ms  avg=1.137ms  max=1.137ms  →
+  count=1  min=1.358ms  avg=1.358ms  max=1.358ms  →
 
 [multi:third]void multipleTimersSameScope()
-  count=1  min=2.162ms  avg=2.162ms  max=2.162ms  →
+  count=1  min=2.581ms  avg=2.581ms  max=2.581ms  →
 
 [multi:second]void multipleTimersSameScope()
-  count=1  min=3.058ms  avg=3.058ms  max=3.058ms  →
+  count=1  min=3.641ms  avg=3.641ms  max=3.641ms  →
 
 [multi:first]void multipleTimersSameScope()
-  count=1  min=3.828ms  avg=3.828ms  max=3.828ms  →
+  count=1  min=4.401ms  avg=4.401ms  max=4.401ms  →
 
 [conditionalWork]void conditionalWork(bool)
-  count=1  min=1.512ms  avg=1.512ms  max=1.512ms  →
+  count=1  min=1.806ms  avg=1.806ms  max=1.806ms  →
 
 [loopedWork:iteration]void loopedWork(int)
-  count=5  min=381us  avg=382us  max=384us  →
+  count=5  min=454us  avg=456us  max=460us  →
 
 [loopedWork:total]void loopedWork(int)
-  count=1  min=1.946ms  avg=1.946ms  max=1.946ms  →
+  count=1  min=2.315ms  avg=2.315ms  max=2.315ms  →
 
 [threadedWork:worker]auto threadedWork(int)::(anonymous class)::operator()() const
-  count=1  min=640us  avg=640us  max=640us  →
+  count=1  min=759us  avg=759us  max=759us  →
 
 [threadedWork:total]void threadedWork(int)
-  count=1  min=705us  avg=705us  max=705us  →
+  count=1  min=803us  avg=803us  max=803us  →
 
 [bufferedSinkExample:iteration]void bufferedSinkExample()
-  count=3  min=194us  avg=194us  max=195us  →
+  count=3  min=229us  avg=232us  max=234us  →
 
 [bufferedSinkExample]void bufferedSinkExample()
-  count=1  min=607us  avg=607us  max=607us  →
+  count=1  min=715us  avg=715us  max=715us  →
 
 [asyncSinkExample:iteration]void asyncSinkExample()
-  count=3  min=159us  avg=160us  max=160us  →
+  count=3  min=183us  avg=184us  max=185us  →
 
 [asyncSinkExample]void asyncSinkExample()
-  count=1  min=485us  avg=485us  max=485us  →
+  count=1  min=555us  avg=555us  max=555us  →
 
 [hotPathMacroExample:total]void hotPathMacroExample()
-  count=1  min=104us  avg=104us  max=104us  →
+  count=1  min=85us  avg=85us  max=85us  →
 
 [hotPath:processBatch]std::uint64_t processTelemetryBatchExample(const std::vector<TelemetryEvent> &, TelemetryTotals &)
-  count=5  min=436us  avg=445us  max=457us  →
+  count=5  min=290us  avg=292us  max=294us  →
 
 [hotPath:total]void hotPathIngestion(int)
-  count=1  min=2.239ms  avg=2.239ms  max=2.239ms  →
+  count=1  min=1.471ms  avg=1.471ms  max=1.471ms  →
 
 [Worker:constructor]Worker::Worker()
-  count=1  min=635us  avg=635us  max=635us  →
+  count=1  min=758us  avg=758us  max=758us  →
 
 [Worker:singleTask]void Worker::doTask(const std::string_view) const
-  count=1  min=1.264ms  avg=1.264ms  max=1.264ms  →
+  count=1  min=1.506ms  avg=1.506ms  max=1.506ms  →
 
 [Worker:task]void Worker::doTask(const std::string_view) const
-  count=5  min=1.256ms  avg=1.258ms  max=1.263ms  →
+  count=5  min=1.505ms  avg=1.505ms  max=1.506ms  →
 
 [Worker:doMultipleTasks]void Worker::doMultipleTasks(int, bool) const
-  count=1  min=3.795ms  avg=3.795ms  max=3.795ms  →
+  count=1  min=4.536ms  avg=4.536ms  max=4.536ms  →
 
 [ScopeTimer]LifetimeTracked
-  count=1  min=3.164ms  avg=3.164ms  max=3.164ms  →
+  count=1  min=3.768ms  avg=3.768ms  max=3.768ms  →
 
 [Demo::runDemoSuite]void runDemoSuite(int)
-  count=1  min=36.402ms  avg=36.402ms  max=36.402ms  →
+  count=1  min=41.604ms  avg=41.604ms  max=41.604ms  →
 
 [Demo::main]int main(int, char **)
-  count=1  min=36.905ms  avg=36.905ms  max=36.905ms  →
+  count=1  min=42.008ms  avg=42.008ms  max=42.008ms  →
 ```
 
 <!-- markdownlint-enable MD013 -->

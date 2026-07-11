@@ -54,9 +54,8 @@ inline unsigned parseBoundedUnsigned(
     unsigned value = 0U;
     const char* const begin = text.data();
     const char* const end = begin + text.size();
-    const auto result = std::from_chars(begin, end, value, 10);
-
-    if (result.ec != std::errc{} || result.ptr != end) {
+    if (const auto result = std::from_chars(begin, end, value, 10);
+        result.ec != std::errc{} || result.ptr != end) {
         throw OptionError(
             std::string(optionName) + " must be a whole decimal integer; got '" +
             std::string(text) + "'"
@@ -83,9 +82,8 @@ inline std::size_t parseBoundedSize(
     std::size_t value = 0U;
     const char* const begin = text.data();
     const char* const end = begin + text.size();
-    const auto result = std::from_chars(begin, end, value, 10);
-
-    if (result.ec != std::errc{} || result.ptr != end) {
+    if (const auto result = std::from_chars(begin, end, value, 10);
+        result.ec != std::errc{} || result.ptr != end) {
         throw OptionError(
             std::string(optionName) + " must be a whole decimal integer; got '" +
             std::string(text) + "'"

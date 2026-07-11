@@ -732,10 +732,10 @@ namespace xyzzy::scopetimer {
             }
             if (normalized.empty()) {
 #if defined(_WIN32)
-                if (const char* temp = std::getenv("TEMP"); temp && *temp) {
-                    normalized = temp;
-                } else if (const char* temp = std::getenv("TMP"); temp && *temp) {
-                    normalized = temp;
+                if (const char* tempDir = std::getenv("TEMP"); tempDir && *tempDir) {
+                    normalized = tempDir;
+                } else if (const char* tmpDir = std::getenv("TMP"); tmpDir && *tmpDir) {
+                    normalized = tmpDir;
                 } else {
                     normalized = ".";
                 }

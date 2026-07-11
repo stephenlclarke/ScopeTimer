@@ -44,6 +44,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
                         "SCOPE_TIMER_DIR": "/ambient",
                         "SCOPE_TIMER_FORMAT": "SECONDS",
                         "SCOPE_TIMER_BENCH_THREADS": "99",
+                        "SCOPETIMER_TEST_PRESERVED": "yes",
                     },
                     clear=False,
                 ),
@@ -67,6 +68,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertNotEqual(child_env["SCOPE_TIMER_DIR"], "/ambient")
         self.assertNotIn("SCOPE_TIMER_FORMAT", child_env)
         self.assertNotIn("SCOPE_TIMER_BENCH_THREADS", child_env)
+        self.assertEqual(child_env["SCOPETIMER_TEST_PRESERVED"], "yes")
 
     def test_parse_extra_env_rejects_harness_owned_keys(self) -> None:
         for item in ("SCOPE_TIMER=0", "scope_timer_dir=/tmp/elsewhere"):
@@ -91,6 +93,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             "NO_EQUALS",
             "=value",
             "BAD-NAME=value",
+            "NÁME=value",
             "SCOPE_TIMER_BENCH_THREADS=-1",
             "SCOPE_TIMER_BENCH_THREADS=1junk",
             "SCOPE_TIMER_BENCH_THREADS=0",
@@ -149,6 +152,7 @@ class BenchmarkProbeTests(unittest.TestCase):
         )
 
     def test_release_benchmark_probe_is_rejected(self) -> None:
+        binary = Path("Benchmark")
         with mock.patch.object(
             benchmark_demo.subprocess,
             "run",
@@ -158,9 +162,10 @@ class BenchmarkProbeTests(unittest.TestCase):
                 benchmark_demo.BenchmarkInvariantError,
                 "disabled by NDEBUG",
             ):
-                benchmark_demo.probe_benchmark_binary(Path("Benchmark"))
+                benchmark_demo.probe_benchmark_binary(binary)
 
     def test_empty_true_like_probe_is_rejected(self) -> None:
+        binary = Path("true")
         with mock.patch.object(
             benchmark_demo.subprocess,
             "run",
@@ -170,7 +175,7 @@ class BenchmarkProbeTests(unittest.TestCase):
                 benchmark_demo.BenchmarkInvariantError,
                 "did not return the ScopeTimer Benchmark",
             ):
-                benchmark_demo.probe_benchmark_binary(Path("true"))
+                benchmark_demo.probe_benchmark_binary(binary)
 
     @unittest.skipUnless(shutil.which("true"), "requires the platform true executable")
     def test_real_true_executable_is_rejected(self) -> None:
@@ -182,6 +187,7 @@ class BenchmarkProbeTests(unittest.TestCase):
             benchmark_demo.probe_benchmark_binary(true_binary)
 
     def test_probe_rejects_nonzero_or_noisy_response(self) -> None:
+        binary = Path("Benchmark")
         cases = (
             (self.completed("", returncode=2), "exited with 2"),
             (
@@ -204,9 +210,10 @@ class BenchmarkProbeTests(unittest.TestCase):
                         benchmark_demo.BenchmarkInvariantError,
                         message,
                     ):
-                        benchmark_demo.probe_benchmark_binary(Path("Benchmark"))
+                        benchmark_demo.probe_benchmark_binary(binary)
 
     def test_probe_timeout_is_rejected(self) -> None:
+        binary = Path("Benchmark")
         with mock.patch.object(
             benchmark_demo.subprocess,
             "run",
@@ -216,7 +223,7 @@ class BenchmarkProbeTests(unittest.TestCase):
                 benchmark_demo.BenchmarkInvariantError,
                 "identity probe timed out",
             ):
-                benchmark_demo.probe_benchmark_binary(Path("Benchmark"))
+                benchmark_demo.probe_benchmark_binary(binary)
 
 
 class BenchmarkReportTests(unittest.TestCase):
@@ -320,6 +327,8 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertAlmostEqual(float(report["approx_per_record_us"]), 1.0)
 
     def test_build_report_rejects_missing_enabled_output(self) -> None:
+        binary = Path("Benchmark")
+
         def missing_output(*args, **kwargs):
             del args, kwargs
             return {
@@ -342,7 +351,7 @@ class BenchmarkReportTests(unittest.TestCase):
                 "compiled with NDEBUG",
             ):
                 benchmark_demo.build_report(
-                    Path("Benchmark"),
+                    binary,
                     iterations=1,
                     runs=1,
                     scenario="hotpath-bench",
@@ -508,6 +517,32 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(comparison["status"], "incomparable")
         self.assertIn("lacks required metadata", comparison["summary"])
 
+    def test_incomplete_baseline_fingerprint_is_incomparable(self) -> None:
+        current = self.fingerprint("current")
+        baseline = record_demo_benchmarks.comparison_fingerprint(
+            {"benchmark": {"scenario": "hotpath-bench", "iterations": 5}}
+        )
+        comparison = record_demo_benchmarks.comparison_for_profile(
+            {"approx_per_record_us": 0.9},
+            self.baseline(baseline),
+            "profile",
+            current,
+        )
+
+        self.assertFalse(baseline["complete"])
+        self.assertEqual(comparison["status"], "incomparable")
+        self.assertIn("baseline fingerprint lacks", comparison["summary"])
+
+    def test_missing_current_fingerprint_preserves_legacy_comparison(self) -> None:
+        comparison = record_demo_benchmarks.comparison_for_profile(
+            {"approx_per_record_us": 0.9},
+            self.baseline(None),
+            "profile",
+        )
+
+        self.assertEqual(comparison["status"], "faster")
+        self.assertAlmostEqual(comparison["delta_pct"], -10.0)
+
     def test_mismatched_fingerprint_is_incomparable(self) -> None:
         current = self.fingerprint("current")
         baseline = self.fingerprint("baseline")
@@ -562,11 +597,10 @@ class MatrixArgumentTests(unittest.TestCase):
         self.assertEqual(config.build_dir, root / "build-bench")
 
     def test_matrix_arguments_reject_zero_instead_of_clamping(self) -> None:
+        args = self.namespace(threads=0)
+        root = Path("/repo")
         with self.assertRaises(benchmark_demo.BenchmarkConfigurationError):
-            record_demo_benchmarks.normalize_args(
-                self.namespace(threads=0),
-                Path("/repo"),
-            )
+            record_demo_benchmarks.normalize_args(args, root)
 
     def test_build_directory_defaults_to_binary_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -45,7 +45,9 @@ PROFILE_ENV_KEYS = frozenset(
     }
 )
 CONTROLLED_ENV_KEYS = RESERVED_ENV_KEYS | PROFILE_ENV_KEYS
-ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+ENV_KEY_RE = re.compile(r"[A-Za-z_]\w*\Z", re.ASCII)
+BENCHMARK_SINK_VALUES = frozenset({"DEFAULT", "BUFFERED", "ASYNC", "NULL", "NOOP"})
+BENCHMARK_TIMER_VALUES = frozenset({"DEFAULT", "STANDARD", "HOTPATH", "FAST"})
 
 
 class BenchmarkConfigurationError(ValueError):
@@ -125,55 +127,76 @@ def parse_bounded_decimal(value: str, name: str, maximum: int) -> int:
     return bounded_positive(int(value), name, maximum)
 
 
+def normalize_env_entry(key: object, value: object) -> tuple[str, str]:
+    if not isinstance(key, str) or not ENV_KEY_RE.fullmatch(key):
+        raise BenchmarkConfigurationError(f"invalid environment variable name: {key!r}")
+    uppercase_key = key.upper()
+    if uppercase_key in RESERVED_ENV_KEYS:
+        raise BenchmarkConfigurationError(
+            f"{key} is controlled by the benchmark harness and cannot be overridden"
+        )
+    if not isinstance(value, str) or "\0" in value:
+        raise BenchmarkConfigurationError(f"invalid value for environment variable {key}")
+    canonical_key = uppercase_key if uppercase_key in PROFILE_ENV_KEYS else key
+    return canonical_key, value
+
+
+def normalize_optional_bounded_value(
+    normalized: dict[str, str],
+    key: str,
+    maximum: int,
+) -> None:
+    if key not in normalized:
+        return
+    normalized[key] = str(parse_bounded_decimal(normalized[key], key, maximum))
+
+
+def normalize_optional_choice(
+    normalized: dict[str, str],
+    key: str,
+    allowed_values: frozenset[str],
+    error_message: str,
+) -> None:
+    if key not in normalized:
+        return
+    value = normalized[key].upper()
+    if value not in allowed_values:
+        raise BenchmarkConfigurationError(error_message)
+    normalized[key] = value
+
+
 def normalize_extra_env(extra_env: dict[str, str]) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for key, value in extra_env.items():
-        if not isinstance(key, str) or not ENV_KEY_RE.fullmatch(key):
-            raise BenchmarkConfigurationError(f"invalid environment variable name: {key!r}")
-        uppercase_key = key.upper()
-        if uppercase_key in RESERVED_ENV_KEYS:
-            raise BenchmarkConfigurationError(
-                f"{key} is controlled by the benchmark harness and cannot be overridden"
-            )
-        if not isinstance(value, str) or "\0" in value:
-            raise BenchmarkConfigurationError(f"invalid value for environment variable {key}")
-        canonical_key = uppercase_key if uppercase_key in PROFILE_ENV_KEYS else key
+        canonical_key, normalized_value = normalize_env_entry(key, value)
         if canonical_key in normalized:
             raise BenchmarkConfigurationError(
                 f"environment variable {canonical_key} may only be specified once"
             )
-        normalized[canonical_key] = value
+        normalized[canonical_key] = normalized_value
 
-    if "SCOPE_TIMER_BENCH_THREADS" in normalized:
-        normalized["SCOPE_TIMER_BENCH_THREADS"] = str(
-            parse_bounded_decimal(
-                normalized["SCOPE_TIMER_BENCH_THREADS"],
-                "SCOPE_TIMER_BENCH_THREADS",
-                MAX_BENCHMARK_THREADS,
-            )
-        )
-    if "SCOPE_TIMER_BENCH_SINK_BYTES" in normalized:
-        normalized["SCOPE_TIMER_BENCH_SINK_BYTES"] = str(
-            parse_bounded_decimal(
-                normalized["SCOPE_TIMER_BENCH_SINK_BYTES"],
-                "SCOPE_TIMER_BENCH_SINK_BYTES",
-                MAX_BENCHMARK_SINK_BYTES,
-            )
-        )
-    if "SCOPE_TIMER_BENCH_SINK" in normalized:
-        sink = normalized["SCOPE_TIMER_BENCH_SINK"].upper()
-        if sink not in {"DEFAULT", "BUFFERED", "ASYNC", "NULL", "NOOP"}:
-            raise BenchmarkConfigurationError(
-                "SCOPE_TIMER_BENCH_SINK must be DEFAULT, BUFFERED, ASYNC, NULL, or NOOP"
-            )
-        normalized["SCOPE_TIMER_BENCH_SINK"] = sink
-    if "SCOPE_TIMER_BENCH_TIMER" in normalized:
-        timer = normalized["SCOPE_TIMER_BENCH_TIMER"].upper()
-        if timer not in {"DEFAULT", "STANDARD", "HOTPATH", "FAST"}:
-            raise BenchmarkConfigurationError(
-                "SCOPE_TIMER_BENCH_TIMER must be DEFAULT, STANDARD, HOTPATH, or FAST"
-            )
-        normalized["SCOPE_TIMER_BENCH_TIMER"] = timer
+    normalize_optional_bounded_value(
+        normalized,
+        "SCOPE_TIMER_BENCH_THREADS",
+        MAX_BENCHMARK_THREADS,
+    )
+    normalize_optional_bounded_value(
+        normalized,
+        "SCOPE_TIMER_BENCH_SINK_BYTES",
+        MAX_BENCHMARK_SINK_BYTES,
+    )
+    normalize_optional_choice(
+        normalized,
+        "SCOPE_TIMER_BENCH_SINK",
+        BENCHMARK_SINK_VALUES,
+        "SCOPE_TIMER_BENCH_SINK must be DEFAULT, BUFFERED, ASYNC, NULL, or NOOP",
+    )
+    normalize_optional_choice(
+        normalized,
+        "SCOPE_TIMER_BENCH_TIMER",
+        BENCHMARK_TIMER_VALUES,
+        "SCOPE_TIMER_BENCH_TIMER must be DEFAULT, STANDARD, HOTPATH, or FAST",
+    )
     return normalized
 
 

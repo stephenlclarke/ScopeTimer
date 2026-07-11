@@ -151,6 +151,9 @@ if(BUILD_TESTING AND TARGET Benchmark)
   add_test(NAME run_benchmark_noop_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_async_invalid_env COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_out_of_range_env COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_invalid_sink_bytes COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_out_of_range_sink_bytes COMMAND Benchmark --iterations=1)
+  add_test(NAME run_benchmark_max_sink_bytes COMMAND Benchmark --iterations=1)
   scopetimer_set_test_working_directory(
     run_benchmark_default
     run_benchmark_iterations_zero
@@ -165,6 +168,9 @@ if(BUILD_TESTING AND TARGET Benchmark)
     run_benchmark_noop_alias
     run_benchmark_async_invalid_env
     run_benchmark_out_of_range_env
+    run_benchmark_invalid_sink_bytes
+    run_benchmark_out_of_range_sink_bytes
+    run_benchmark_max_sink_bytes
   )
   set_tests_properties(
     run_benchmark_iterations_zero
@@ -172,6 +178,8 @@ if(BUILD_TESTING AND TARGET Benchmark)
     run_benchmark_invalid_scenario
     run_benchmark_async_invalid_env
     run_benchmark_out_of_range_env
+    run_benchmark_invalid_sink_bytes
+    run_benchmark_out_of_range_sink_bytes
     PROPERTIES WILL_FAIL TRUE
   )
   scopetimer_set_benchmark_test_env(
@@ -205,6 +213,18 @@ if(BUILD_TESTING AND TARGET Benchmark)
   scopetimer_set_benchmark_test_env(
     run_benchmark_out_of_range_env
     "SCOPE_TIMER_BENCH_THREADS=9999999999999999999999999999;SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
+  )
+  scopetimer_set_benchmark_test_env(
+    run_benchmark_invalid_sink_bytes
+    "SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
+  )
+  scopetimer_set_benchmark_test_env(
+    run_benchmark_out_of_range_sink_bytes
+    "SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
+  )
+  scopetimer_set_benchmark_test_env(
+    run_benchmark_max_sink_bytes
+    "SCOPE_TIMER_BENCH_SINK=NULL;SCOPE_TIMER_BENCH_SINK_BYTES=67108864"
   )
 endif()
 

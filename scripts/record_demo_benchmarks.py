@@ -1156,6 +1156,36 @@ def save_report(
         handle.write("\n")
 
 
+def fingerprint_incomparability(
+    current_fingerprint: dict[str, Any] | str | None,
+    baseline_entry: dict[str, Any],
+) -> dict[str, Any] | None:
+    current_digest = fingerprint_digest(current_fingerprint)
+    if current_digest is None:
+        return None
+
+    baseline_fingerprint = baseline_entry.get("comparison_fingerprint")
+    baseline_digest = fingerprint_digest(baseline_fingerprint)
+    if not fingerprint_is_complete(current_fingerprint):
+        summary = "incomparable: current benchmark fingerprint lacks required metadata"
+    elif baseline_digest is None:
+        summary = "incomparable: main baseline has no configuration fingerprint"
+    elif not fingerprint_is_complete(baseline_fingerprint):
+        summary = "incomparable: main baseline fingerprint lacks required metadata"
+    elif baseline_digest != current_digest:
+        summary = "incomparable: benchmark configuration, host, or toolchain differs"
+    else:
+        return None
+
+    return {
+        "indicator": "incomparable",
+        "status": "incomparable",
+        "summary": summary,
+        "current_fingerprint": current_digest,
+        "baseline_fingerprint": baseline_digest,
+    }
+
+
 def comparison_for_profile(
     current_report: dict[str, Any],
     baseline_entry: dict[str, Any] | None,
@@ -1169,43 +1199,9 @@ def comparison_for_profile(
             "summary": "main baseline unavailable",
         }
 
-    current_digest = fingerprint_digest(current_fingerprint)
-    if current_digest is not None:
-        if not fingerprint_is_complete(current_fingerprint):
-            return {
-                "indicator": "incomparable",
-                "status": "incomparable",
-                "summary": "incomparable: current benchmark fingerprint lacks required metadata",
-                "current_fingerprint": current_digest,
-                "baseline_fingerprint": fingerprint_digest(
-                    baseline_entry.get("comparison_fingerprint")
-                ),
-            }
-        baseline_digest = fingerprint_digest(baseline_entry.get("comparison_fingerprint"))
-        if baseline_digest is None:
-            return {
-                "indicator": "incomparable",
-                "status": "incomparable",
-                "summary": "incomparable: main baseline has no configuration fingerprint",
-                "current_fingerprint": current_digest,
-                "baseline_fingerprint": None,
-            }
-        if not fingerprint_is_complete(baseline_entry.get("comparison_fingerprint")):
-            return {
-                "indicator": "incomparable",
-                "status": "incomparable",
-                "summary": "incomparable: main baseline fingerprint lacks required metadata",
-                "current_fingerprint": current_digest,
-                "baseline_fingerprint": baseline_digest,
-            }
-        if baseline_digest != current_digest:
-            return {
-                "indicator": "incomparable",
-                "status": "incomparable",
-                "summary": "incomparable: benchmark configuration, host, or toolchain differs",
-                "current_fingerprint": current_digest,
-                "baseline_fingerprint": baseline_digest,
-            }
+    fingerprint_blocker = fingerprint_incomparability(current_fingerprint, baseline_entry)
+    if fingerprint_blocker is not None:
+        return fingerprint_blocker
 
     previous_profiles = {
         profile.get("name"): profile for profile in baseline_entry.get("results", [])
