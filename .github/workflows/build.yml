@@ -61,7 +61,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          if [[ -n "${SONAR_TOKEN}" ]]; then
+          if [ -n "${SONAR_TOKEN}" ]; then
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
           else
             echo "enabled=false" >> "${GITHUB_OUTPUT}"
@@ -82,7 +82,7 @@ jobs:
           CXX: g++
         run: |
           sonar_enabled=OFF
-          if [[ "${{ steps.sonar.outputs.enabled }}" == "true" ]]; then
+          if [ "${{ steps.sonar.outputs.enabled }}" = "true" ]; then
             sonar_enabled=ON
           fi
           rm -rf build "${BUILD_WRAPPER_OUT_DIR}"
