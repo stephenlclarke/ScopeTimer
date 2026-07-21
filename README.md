@@ -27,7 +27,7 @@ on in the early 1990's while at Merril Lynch. It owed a lot to James O.
 Coplien's Advanced C++: Programming Styles and Idioms (Addison-Wesley, first
 ed. 1991). A very smart guy that I had the pleaseure to work with when I was
 at Bloomberg in 2016. This version is a re-imagining of the original.
-Rewritten from scratch for C++17/20.
+Rewritten from scratch for C++20.
 
 ---
 
