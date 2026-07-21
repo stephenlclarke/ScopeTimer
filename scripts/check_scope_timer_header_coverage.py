@@ -8,11 +8,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def coverage_threshold(value: str) -> float:
+    try:
+        threshold = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("threshold must be a number from 0 to 100") from error
+    if not math.isfinite(threshold) or not 0.0 <= threshold <= 100.0:
+        raise argparse.ArgumentTypeError("threshold must be a finite number from 0 to 100")
+    return threshold
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--threshold",
-        type=float,
+        type=coverage_threshold,
         default=80.0,
         help="Minimum required line coverage percentage for ScopeTimer.hpp.",
     )
@@ -132,7 +143,7 @@ def main() -> int:
 
     compile_cmd = [
         clangxx,
-        "-std=c++17",
+        "-std=c++20",
         "-O0",
         "-g",
         "-fprofile-instr-generate",

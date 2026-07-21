@@ -1,5 +1,5 @@
 /*
- * ScopeTimer - lightweight C++17 scope timing utility
+ * ScopeTimer - lightweight C++20 scope timing utility
  * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify
@@ -119,6 +119,7 @@
 #include <sys/stat.h>
 #if defined(_WIN32)
 #include <io.h>
+#include <windows.h>
 #else
 #include <sys/uio.h>
 #include <unistd.h>
@@ -127,6 +128,17 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(_MSVC_LANG)
+#define SCOPETIMER_CPLUSPLUS _MSVC_LANG
+#else
+#define SCOPETIMER_CPLUSPLUS __cplusplus
+#endif
+
+#if SCOPETIMER_CPLUSPLUS < 202002L
+#error "ScopeTimer requires C++20 or later."
+#endif
+#undef SCOPETIMER_CPLUSPLUS
 
 #if defined(__GNUC__) || defined(__clang__)
 #define SCOPE_FUNCTION __PRETTY_FUNCTION__
@@ -187,6 +199,9 @@ namespace xyzzy::scopetimer {
         struct BufferedTestSinkWriteStorageTag {};
         struct AsyncSinkStateTag {};
         struct LocaltimeMutexTag {};
+        struct ProcessCleanupStartedTag {};
+        struct LogOpenStateTag {};
+        struct LogDirectoryStateTag {};
     } // namespace detail
 
     inline std::mutex& outMutex() noexcept {
@@ -278,9 +293,12 @@ namespace xyzzy::scopetimer {
             LabelArg() = default;
 
             template <std::size_t N>
-            explicit LabelArg(const char (&literal)[N]) noexcept
-                : view_(literal, N ? N - 1 : 0) {
-                storageKind_ = LabelStorageKind::Borrowed;
+            explicit LabelArg(const char (&label)[N]) noexcept
+                : view_(label, N ? N - 1 : 0) {
+                // A char array can be an automatic object as well as a string
+                // literal. Keep a timer-local copy so delayed destruction never
+                // observes an expired or subsequently modified array.
+                storageKind_ = LabelStorageKind::Copy;
             }
 
             explicit LabelArg(const char* s) {
@@ -322,11 +340,11 @@ namespace xyzzy::scopetimer {
         }
 
         template <std::size_t N>
-        inline LabelData makeLabelData(const char (&literal)[N]) noexcept {
+        inline LabelData makeLabelData(const char (&label)[N]) noexcept {
             return LabelData(
-                std::string_view{literal, N ? N - 1 : 0},
+                std::string_view{label, N ? N - 1 : 0},
                 {},
-                LabelStorageKind::Borrowed
+                LabelStorageKind::Copy
             );
         }
 
@@ -356,7 +374,7 @@ namespace xyzzy::scopetimer {
     /**
      * @brief A high-resolution scope timer for measuring execution time of code blocks.
      *
-     * This class uses C++17 features such as std::string_view for lightweight string parameters,
+     * This class uses C++20 features such as std::string_view for lightweight string parameters,
      * thread_local storage and std::atomic for lock-free thread ID assignment,
      * and fixed-size stack buffers for efficient formatting without heap allocation.
      * It logs timing information to a configurable sink with buffered options for
@@ -365,6 +383,9 @@ namespace xyzzy::scopetimer {
     class ScopeTimer {
     public:
         struct HotPathTag {};
+
+        static inline constexpr std::size_t DefaultSinkFlushBytes = 16U * 1024U;
+        static inline constexpr std::size_t MaxSinkFlushBytes = 64U * 1024U * 1024U;
 
         /**
          * @brief Interface for user-supplied log sinks.
@@ -428,7 +449,7 @@ namespace xyzzy::scopetimer {
             : ScopeTimer(where, detail::LabelData{
                 std::string_view{label, N ? N - 1 : 0},
                 {},
-                detail::LabelStorageKind::Borrowed
+                detail::LabelStorageKind::Copy
             }) {}
 
         inline explicit ScopeTimer(HotPathTag, detail::LabelData labelData = detail::LabelData{}) noexcept {
@@ -453,7 +474,7 @@ namespace xyzzy::scopetimer {
             : ScopeTimer(HotPathTag{}, detail::LabelData{
                 std::string_view{label, N ? N - 1 : 0},
                 {},
-                detail::LabelStorageKind::Borrowed
+                detail::LabelStorageKind::Copy
             }) {}
 
         ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
@@ -468,7 +489,17 @@ namespace xyzzy::scopetimer {
          * Logs include thread ID, scope name, start and end timestamps, and elapsed time.
          */
         inline ~ScopeTimer() noexcept {
-            if (disabled_) {
+            // An atexit cleanup registered after a static timer was constructed
+            // runs before that timer's destructor.  At that point custom sinks,
+            // the async worker and the log descriptor have deliberately been
+            // dismantled, so static destruction must be a no-op.
+            if (disabled_ || processCleanupStartedStorage().load(std::memory_order_acquire)) {
+                return;
+            }
+            // A custom sink can instrument its own work. Its nested timer is
+            // deliberately dropped before trying to lock the direct sink,
+            // preventing both self-deadlock and recursive callback loops.
+            if (customSinkCallbackActive_) {
                 return;
             }
 
@@ -535,10 +566,11 @@ namespace xyzzy::scopetimer {
             }
         }
 
-        static inline void enableThreadBufferedSink(std::size_t flushBytes = 16U * 1024U) noexcept {
-            if (flushBytes == 0) {
-                flushBytes = 16U * 1024U;
+        static inline void enableThreadBufferedSink(std::size_t flushBytes = DefaultSinkFlushBytes) noexcept {
+            if (customSinkCallbackActive_) {
+                return;
             }
+            flushBytes = normalizeSinkFlushBytes(flushBytes);
             std::lock_guard sinkStateLock(sinkConfigMutex());
             registerProcessCleanup();
             flushAllThreadBuffers();
@@ -556,6 +588,9 @@ namespace xyzzy::scopetimer {
         }
 
         static inline void disableThreadBufferedSink() noexcept {
+            if (customSinkCallbackActive_) {
+                return;
+            }
             std::lock_guard sinkStateLock(sinkConfigMutex());
             flushAllThreadBuffers();
             asyncSinkFlush();
@@ -567,10 +602,11 @@ namespace xyzzy::scopetimer {
             }
         }
 
-        static inline void enableAsyncSink(std::size_t flushBytes = 16U * 1024U) noexcept {
-            if (flushBytes == 0) {
-                flushBytes = 16U * 1024U;
+        static inline void enableAsyncSink(std::size_t flushBytes = DefaultSinkFlushBytes) noexcept {
+            if (customSinkCallbackActive_) {
+                return;
             }
+            flushBytes = normalizeSinkFlushBytes(flushBytes);
             std::lock_guard sinkStateLock(sinkConfigMutex());
             registerProcessCleanup();
             flushAllThreadBuffers();
@@ -713,12 +749,21 @@ namespace xyzzy::scopetimer {
          *
          * Controlled by SCOPE_TIMER_DIR, with a platform-appropriate fallback.
          */
+        struct LogDirectoryState {
+            std::string cache{"/tmp/"};
+            bool initialized{false};
+        };
+
+        static inline LogDirectoryState& logDirectoryState() noexcept {
+            return detail::singletonStorage<detail::LogDirectoryStateTag, LogDirectoryState>();
+        }
+
         static inline const std::string& logDirectory() {
-            if (!logDirInitialized_) {
+            auto& state = logDirectoryState();
+            if (!state.initialized) {
                 resetLogDirectoryForTests();
-                logDirInitialized_ = true;
             }
-            return logDirCache_;
+            return state.cache;
         }
 
         static inline void resetLogDirectoryForTests(std::string_view newDir = {}) {
@@ -743,15 +788,22 @@ namespace xyzzy::scopetimer {
                 normalized = "/tmp";
 #endif
             }
-            if (!normalized.empty() && normalized.back() != '/' && normalized.back() != '\\') {
+            if (!normalized.empty()
+#if defined(_WIN32)
+                && normalized.back() != '/' && normalized.back() != '\\'
+#else
+                && normalized.back() != '/'
+#endif
+            ) {
 #if defined(_WIN32)
                 normalized.push_back('\\');
 #else
                 normalized.push_back('/');
 #endif
             }
-            logDirCache_ = std::move(normalized);
-            logDirInitialized_ = true;
+            auto& state = logDirectoryState();
+            state.cache = std::move(normalized);
+            state.initialized = true;
         }
 
         // One-time-selected elapsed-time formatter infrastructure
@@ -1016,6 +1068,25 @@ namespace xyzzy::scopetimer {
             out += toCopy;
         }
 
+        static inline void appendBytesTruncatingReserved(
+            char*& out,
+            const char* end,
+            const char* s,
+            std::size_t n,
+            std::size_t reservedBytes
+        ) noexcept {
+            if (n == 0U || out >= end) {
+                return;
+            }
+            const auto available = static_cast<std::size_t>(end - out);
+            if (available <= reservedBytes) {
+                return;
+            }
+            const auto toCopy = std::min(n, available - reservedBytes);
+            std::memcpy(out, s, toCopy);
+            out += toCopy;
+        }
+
         static inline void appendCharTruncating(char*& out, const char* end, char c) noexcept {
             if (out < end) {
                 *out++ = c;
@@ -1105,6 +1176,35 @@ namespace xyzzy::scopetimer {
             appendUnsignedTruncating(out, end, tid);
         }
 
+        static inline void appendThreadIdTruncatingReserved(
+            char*& out,
+            const char* end,
+            unsigned tid,
+            std::size_t reservedBytes
+        ) noexcept {
+            std::array<char, 16> digits{};
+            char* digitEnd = digits.data();
+            if (tid < 1000U) {
+                digits[0] = static_cast<char>('0' + ((tid / 100U) % 10U));
+                digits[1] = static_cast<char>('0' + ((tid / 10U) % 10U));
+                digits[2] = static_cast<char>('0' + (tid % 10U));
+                digitEnd += 3U;
+            } else {
+                const auto result = std::to_chars(digits.data(), digits.data() + digits.size(), tid);
+                if (result.ec != std::errc{}) {
+                    return;
+                }
+                digitEnd = result.ptr;
+            }
+            appendBytesTruncatingReserved(
+                out,
+                end,
+                digits.data(),
+                static_cast<std::size_t>(digitEnd - digits.data()),
+                reservedBytes
+            );
+        }
+
         struct LogLineFields {
             std::string_view label;
             unsigned threadNum{0};
@@ -1129,18 +1229,26 @@ namespace xyzzy::scopetimer {
 
             char* cur = out;
             const char* end = out + outSz - 2U; // reserve newline plus terminator
+            constexpr std::size_t MaxThreadIdBytes = 10U;
+            constexpr std::size_t ClosingLabelBytes = sizeof("] TID=") - 1U;
+            constexpr std::size_t SeparatorBytes = sizeof(" | ") - 1U;
+            const std::size_t elapsedBytes = (sizeof(" | elapsed=") - 1U) + fields.elapsed.size();
+            const std::size_t afterLabelBytes = ClosingLabelBytes + MaxThreadIdBytes + SeparatorBytes + elapsedBytes;
 
-            appendCharTruncating(cur, end, '[');
-            appendBytesTruncating(cur, end, fields.label.data(), fields.label.size());
-            appendBytesTruncating(cur, end, "] TID=", sizeof("] TID=") - 1U);
-            appendThreadIdTruncating(cur, end, fields.threadNum);
-            appendBytesTruncating(cur, end, " | ", sizeof(" | ") - 1U);
-            appendBytesTruncating(cur, end, fields.where.data(), fields.where.size());
+            if (static_cast<std::size_t>(end - cur) > afterLabelBytes) {
+                appendCharTruncating(cur, end, '[');
+            }
+            appendBytesTruncatingReserved(cur, end, fields.label.data(), fields.label.size(), afterLabelBytes);
+            appendBytesTruncatingReserved(cur, end, "] TID=", ClosingLabelBytes,
+                                          MaxThreadIdBytes + SeparatorBytes + elapsedBytes);
+            appendThreadIdTruncatingReserved(cur, end, fields.threadNum, SeparatorBytes + elapsedBytes);
+            appendBytesTruncatingReserved(cur, end, " | ", SeparatorBytes, elapsedBytes);
+            appendBytesTruncatingReserved(cur, end, fields.where.data(), fields.where.size(), elapsedBytes);
             if (fields.wallTimeEnabled) {
-                appendBytesTruncating(cur, end, " | start=", sizeof(" | start=") - 1U);
-                appendBytesTruncating(cur, end, fields.startWall.data(), fields.startWall.size());
-                appendBytesTruncating(cur, end, " | end=", sizeof(" | end=") - 1U);
-                appendBytesTruncating(cur, end, fields.endWall.data(), fields.endWall.size());
+                appendBytesTruncatingReserved(cur, end, " | start=", sizeof(" | start=") - 1U, elapsedBytes);
+                appendBytesTruncatingReserved(cur, end, fields.startWall.data(), fields.startWall.size(), elapsedBytes);
+                appendBytesTruncatingReserved(cur, end, " | end=", sizeof(" | end=") - 1U, elapsedBytes);
+                appendBytesTruncatingReserved(cur, end, fields.endWall.data(), fields.endWall.size(), elapsedBytes);
             }
             appendBytesTruncating(cur, end, " | elapsed=", sizeof(" | elapsed=") - 1U);
             appendBytesTruncating(cur, end, fields.elapsed.data(), fields.elapsed.size());
@@ -1165,8 +1273,11 @@ namespace xyzzy::scopetimer {
 
             char* cur = out;
             const char* end = out + outSz - 2U;
-            appendCharTruncating(cur, end, '[');
-            appendBytesTruncating(cur, end, label.data(), label.size());
+            const std::size_t elapsedBytes = (sizeof("] elapsed=") - 1U) + elapsedLen;
+            if (static_cast<std::size_t>(end - cur) > elapsedBytes) {
+                appendCharTruncating(cur, end, '[');
+            }
+            appendBytesTruncatingReserved(cur, end, label.data(), label.size(), elapsedBytes);
             appendBytesTruncating(cur, end, "] elapsed=", sizeof("] elapsed=") - 1U);
             appendBytesTruncating(cur, end, elapsed, elapsedLen);
             *cur++ = '\n';
@@ -1254,14 +1365,26 @@ namespace xyzzy::scopetimer {
         };
 
         struct ThreadBufferHandle {
-            std::shared_ptr<ThreadBufferState> state{std::make_shared<ThreadBufferState>()};
+            std::shared_ptr<ThreadBufferState> state;
 
-            ThreadBufferHandle() {
-                registerThreadBuffer(state);
+            ThreadBufferHandle() noexcept {
+                try {
+                    state = std::make_shared<ThreadBufferState>();
+                    registerThreadBuffer(state);
+                } catch (...) {
+                    // Profiling must not terminate the host when thread-local
+                    // diagnostic storage cannot be allocated.
+                    state.reset();
+                }
             }
 
             ~ThreadBufferHandle() {
-                ScopeTimer::flushThreadBuffer(*state);
+                if (state) {
+                    if (!ScopeTimer::processCleanupStartedStorage().load(std::memory_order_acquire)) {
+                        ScopeTimer::flushThreadBuffer(*state);
+                    }
+                    ScopeTimer::unregisterThreadBuffer(state);
+                }
             }
 
             ThreadBufferHandle(const ThreadBufferHandle&) = delete;
@@ -1270,12 +1393,18 @@ namespace xyzzy::scopetimer {
             ThreadBufferHandle& operator=(ThreadBufferHandle&&) = delete;
         };
 
-        static inline ThreadBufferState& threadLocalBuffer() noexcept {
+        static inline ThreadBufferState* threadLocalBuffer() noexcept {
             thread_local ThreadBufferHandle handle;
-            return *handle.state;
+            return handle.state.get();
+        }
+        static inline std::size_t normalizeSinkFlushBytes(std::size_t flushBytes) noexcept {
+            if (flushBytes == 0U) {
+                return DefaultSinkFlushBytes;
+            }
+            return std::min(flushBytes, MaxSinkFlushBytes);
         }
         static inline std::atomic<std::size_t>& threadBufferFlushBytesStorage() noexcept {
-            return detail::singletonStorage<detail::ThreadBufferFlushBytesTag, std::atomic<std::size_t>>(16U * 1024U);
+            return detail::singletonStorage<detail::ThreadBufferFlushBytesTag, std::atomic<std::size_t>>(DefaultSinkFlushBytes);
         }
         static inline std::size_t threadBufferFlushBytes() noexcept {
             // The threshold is configuration state written under sinkConfigMutex(); a
@@ -1289,37 +1418,67 @@ namespace xyzzy::scopetimer {
             return detail::singletonStorage<detail::ThreadBufferRegistryTag, std::vector<std::weak_ptr<ThreadBufferState>>>();
         }
         static inline void registerThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
-            std::lock_guard lock(threadBufferRegistryMutex());
-            threadBufferRegistry().emplace_back(state);
+            try {
+                std::lock_guard lock(threadBufferRegistryMutex());
+                threadBufferRegistry().emplace_back(state);
+            } catch (...) {
+                // The owning thread still flushes its local buffer at thread
+                // exit; only cross-thread best-effort draining is unavailable.
+            }
+        }
+        static inline void unregisterThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
+            try {
+                std::lock_guard lock(threadBufferRegistryMutex());
+                auto& registry = threadBufferRegistry();
+                registry.erase(
+                    std::remove_if(registry.begin(), registry.end(), [&state](const auto& weakState) {
+                        return weakState.expired()
+                            || (!weakState.owner_before(state) && !state.owner_before(weakState));
+                    }),
+                    registry.end()
+                );
+            } catch (...) {
+                // Registry maintenance is best-effort; the shared state still
+                // releases normally even if its weak entry cannot be removed.
+            }
         }
         static inline std::vector<std::shared_ptr<ThreadBufferState>> snapshotThreadBuffers() noexcept {
-            std::vector<std::shared_ptr<ThreadBufferState>> states;
-            std::lock_guard lock(threadBufferRegistryMutex());
-            auto& registry = threadBufferRegistry();
-            registry.erase(
-                std::remove_if(registry.begin(), registry.end(), [&states](const auto& weakState) {
-                    if (auto state = weakState.lock()) {
-                        states.push_back(state);
-                        return false;
-                    }
-                    return true;
-                }),
-                registry.end()
-            );
-            return states;
+            try {
+                std::vector<std::shared_ptr<ThreadBufferState>> states;
+                std::lock_guard lock(threadBufferRegistryMutex());
+                auto& registry = threadBufferRegistry();
+                registry.erase(
+                    std::remove_if(registry.begin(), registry.end(), [&states](const auto& weakState) {
+                        if (auto state = weakState.lock()) {
+                            states.push_back(state);
+                            return false;
+                        }
+                        return true;
+                    }),
+                    registry.end()
+                );
+                return states;
+            } catch (...) {
+                return {};
+            }
         }
-        static inline void ensureThreadBufferCapacity(ThreadBufferState& state, std::size_t flushBytes) noexcept {
+        static inline bool ensureThreadBufferCapacity(ThreadBufferState& state, std::size_t flushBytes) noexcept {
             if (state.capacity >= flushBytes) {
-                return;
+                return true;
             }
 
             std::lock_guard lock(state.flushMutex);
             if (state.capacity >= flushBytes) {
-                return;
+                return true;
             }
 
-            state.data.resize(flushBytes);
-            state.capacity = flushBytes;
+            try {
+                state.data.resize(flushBytes);
+                state.capacity = flushBytes;
+                return true;
+            } catch (...) {
+                return false;
+            }
         }
         static inline bool bufferedSinkTargetNeedsLock(BufferedSinkTargetMode mode) noexcept {
             return mode != BufferedSinkTargetMode::Async;
@@ -1420,6 +1579,9 @@ namespace xyzzy::scopetimer {
         static inline std::atomic<ActiveSink>& activeSinkStorage() noexcept {
             return detail::singletonStorage<detail::ActiveSinkStorageTag, std::atomic<ActiveSink>>(ActiveSink::Default);
         }
+        static inline std::atomic<bool>& processCleanupStartedStorage() noexcept {
+            return detail::singletonStorage<detail::ProcessCleanupStartedTag, std::atomic<bool>>(false);
+        }
         static inline std::atomic<BufferedSinkTargetMode>& bufferedSinkTargetModeStorage() noexcept {
             return detail::singletonStorage<detail::BufferedSinkTargetModeStorageTag, std::atomic<BufferedSinkTargetMode>>(BufferedSinkTargetMode::Default);
         }
@@ -1441,23 +1603,42 @@ namespace xyzzy::scopetimer {
         static inline bool hasCustomSink() {
             return customLogSinkStorage() != nullptr || static_cast<bool>(customSinkWriteStorage());
         }
+        static inline thread_local bool customSinkCallbackActive_{false};
         static inline void writeToCustomSink(const char* data, std::size_t len) noexcept {
-            if (auto* sink = customLogSinkStorage()) {
-                sink->write(data, len);
+            if (customSinkCallbackActive_) {
+                // A callback may instrument its own work. Dropping that nested
+                // diagnostic record prevents recursive callback loops.
                 return;
             }
-            if (const auto& writeFn = customSinkWriteStorage(); writeFn) {
-                writeFn(data, len);
+            customSinkCallbackActive_ = true;
+            try {
+                if (auto* sink = customLogSinkStorage()) {
+                    sink->write(data, len);
+                } else if (const auto& writeFn = customSinkWriteStorage(); writeFn) {
+                    writeFn(data, len);
+                }
+            } catch (...) {
+                // A throwing std::function must not violate the timer's
+                // noexcept destructor contract.
             }
+            customSinkCallbackActive_ = false;
         }
         static inline void flushCustomSink() noexcept {
-            if (auto* sink = customLogSinkStorage()) {
-                sink->flush();
+            if (customSinkCallbackActive_) {
                 return;
             }
-            if (const auto& flushFn = customSinkFlushStorage(); flushFn) {
-                flushFn();
+            customSinkCallbackActive_ = true;
+            try {
+                if (auto* sink = customLogSinkStorage()) {
+                    sink->flush();
+                } else if (const auto& flushFn = customSinkFlushStorage(); flushFn) {
+                    flushFn();
+                }
+            } catch (...) {
+                // See writeToCustomSink(): diagnostics cannot terminate the
+                // application merely because a callback throws.
             }
+            customSinkCallbackActive_ = false;
         }
         static inline void writeToActiveSink(ActiveSink sink, const char* data, std::size_t len) noexcept {
             switch (sink) {
@@ -1529,6 +1710,9 @@ namespace xyzzy::scopetimer {
             std::size_t size{0U};
         };
 
+        static inline constexpr std::size_t MaxAsyncSinkQueuedBytes = 16U * 1024U * 1024U;
+        static inline constexpr std::size_t MaxAsyncSinkRecycledBytes = 16U * 1024U * 1024U;
+
         struct AsyncSinkState {
             std::mutex mutex;
             std::condition_variable ready;
@@ -1536,30 +1720,47 @@ namespace xyzzy::scopetimer {
             std::deque<AsyncSinkBatch> queue;
             std::vector<AsyncSinkBatch> recycled;
             std::thread worker;
+            std::size_t queuedBytes{0U};
+            std::size_t recycledBytes{0U};
             bool running{false};
             bool stop{false};
             bool writing{false};
+            bool restartAfterSelfShutdown{false};
         };
 
         static inline AsyncSinkState& asyncSinkState() noexcept {
             return detail::singletonStorage<detail::AsyncSinkStateTag, AsyncSinkState>();
         }
-        static inline AsyncSinkBatch acquireAsyncSinkBatch(std::size_t len) noexcept {
-            AsyncSinkBatch batch;
-            auto& state = asyncSinkState();
-            {
-                std::lock_guard lock(state.mutex);
-                if (!state.recycled.empty()) {
-                    batch = std::move(state.recycled.back());
-                    state.recycled.pop_back();
-                }
-            }
+        static inline thread_local bool asyncSinkWorkerActive_{false};
 
-            if (batch.data.size() < len) {
-                batch.data.resize(len);
+        static inline bool isAsyncSinkWorkerThread() noexcept {
+            return asyncSinkWorkerActive_;
+        }
+
+        static inline std::optional<AsyncSinkBatch> acquireAsyncSinkBatch(std::size_t len) noexcept {
+            try {
+                AsyncSinkBatch batch;
+                auto& state = asyncSinkState();
+                {
+                    std::lock_guard lock(state.mutex);
+                    if (!state.recycled.empty()) {
+                        batch = std::move(state.recycled.back());
+                        const auto capacity = batch.data.capacity();
+                        state.recycled.pop_back();
+                        state.recycledBytes = capacity > state.recycledBytes
+                            ? 0U
+                            : state.recycledBytes - capacity;
+                    }
+                }
+
+                if (batch.data.size() < len) {
+                    batch.data.resize(len);
+                }
+                batch.size = len;
+                return batch;
+            } catch (...) {
+                return std::nullopt;
             }
-            batch.size = len;
-            return batch;
         }
         static inline void defaultSinkWriteBatches(const std::deque<AsyncSinkBatch>& batches) noexcept {
 #if !defined(_WIN32)
@@ -1609,6 +1810,7 @@ namespace xyzzy::scopetimer {
         }
         static inline void runAsyncSinkWorker() noexcept {
             auto& workerState = asyncSinkState();
+            asyncSinkWorkerActive_ = true;
             for (;;) {
                 std::deque<AsyncSinkBatch> pending;
                 {
@@ -1623,6 +1825,7 @@ namespace xyzzy::scopetimer {
                         continue;
                     }
                     pending.swap(workerState.queue);
+                    workerState.queuedBytes = 0U;
                     workerState.writing = true;
                 }
 
@@ -1641,7 +1844,16 @@ namespace xyzzy::scopetimer {
                     std::lock_guard lock(workerState.mutex);
                     for (auto& batch : pending) {
                         batch.size = 0U;
-                        workerState.recycled.emplace_back(std::move(batch));
+                        const auto capacity = batch.data.capacity();
+                        if (capacity <= MaxAsyncSinkRecycledBytes - std::min(workerState.recycledBytes, MaxAsyncSinkRecycledBytes)) {
+                            try {
+                                workerState.recycled.emplace_back(std::move(batch));
+                                workerState.recycledBytes += capacity;
+                            } catch (...) {
+                                // Dropping a recycled batch is preferable to
+                                // terminating the application for diagnostics.
+                            }
+                        }
                     }
                     workerState.writing = false;
                     if (workerState.queue.empty()) {
@@ -1657,6 +1869,24 @@ namespace xyzzy::scopetimer {
                     defaultSinkFlush();
                     break;
             }
+
+            bool restart = false;
+            {
+                std::lock_guard lock(workerState.mutex);
+                restart = workerState.restartAfterSelfShutdown
+                    && activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
+                    && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async
+                    && !processCleanupStartedStorage().load(std::memory_order_acquire);
+                workerState.restartAfterSelfShutdown = false;
+                workerState.stop = false;
+                workerState.running = false;
+                workerState.writing = false;
+                workerState.drained.notify_all();
+            }
+            asyncSinkWorkerActive_ = false;
+            if (restart) {
+                ensureAsyncSinkRunning();
+            }
         }
 
         static inline void ensureAsyncSinkRunning() noexcept {
@@ -1667,8 +1897,14 @@ namespace xyzzy::scopetimer {
             }
             state.stop = false;
             state.writing = false;
-            state.running = true;
-            state.worker = std::thread([] { runAsyncSinkWorker(); });
+            state.restartAfterSelfShutdown = false;
+            try {
+                state.worker = std::thread([] { runAsyncSinkWorker(); });
+                state.running = true;
+            } catch (...) {
+                state.running = false;
+                state.stop = false;
+            }
         }
 
         static inline void shutdownAsyncSink() noexcept {
@@ -1678,6 +1914,15 @@ namespace xyzzy::scopetimer {
                 return;
             }
             state.stop = true;
+            if (isAsyncSinkWorkerThread()) {
+                state.restartAfterSelfShutdown = true;
+                if (state.worker.joinable()) {
+                    state.worker.detach();
+                }
+                lock.unlock();
+                state.ready.notify_all();
+                return;
+            }
             lock.unlock();
             state.ready.notify_all();
             if (state.worker.joinable()) {
@@ -1701,6 +1946,12 @@ namespace xyzzy::scopetimer {
             std::function<void(const char*, std::size_t)> writeFn = {},
             std::function<void()> flushFn = {}
         ) {
+            if (customSinkCallbackActive_) {
+                // Sink registration is a quiescent setup/teardown operation;
+                // changing a callback while it is executing would invalidate
+                // the std::function being invoked.
+                return;
+            }
             std::lock_guard sinkStateLock(sinkConfigMutex());
             flushAllThreadBuffers();
             asyncSinkFlush();
@@ -1718,6 +1969,9 @@ namespace xyzzy::scopetimer {
         }
 
         static inline void setCustomLogSink(LogSink* sink) {
+            if (customSinkCallbackActive_) {
+                return;
+            }
             std::lock_guard sinkStateLock(sinkConfigMutex());
             flushAllThreadBuffers();
             asyncSinkFlush();
@@ -1852,29 +2106,70 @@ namespace xyzzy::scopetimer {
 
         static inline thread_local FormatBuffers tlsFormatBuffers_{};
         static inline thread_local LineBuffer tlsLineBuffer_{};
-        static inline std::string logDirCache_{"/tmp/"};
-        static inline bool logDirInitialized_{false};
 
         static inline int openLogFileForAppend(const std::string& path) noexcept {
 #if defined(_WIN32)
-            int openFlags = _O_CREAT | _O_WRONLY | _O_APPEND;
+            const HANDLE handle = ::CreateFileA(
+                path.c_str(),
+                FILE_APPEND_DATA,
+                FILE_SHARE_READ,
+                nullptr,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                nullptr
+            );
+            if (handle == INVALID_HANDLE_VALUE) {
+                return -1;
+            }
+            BY_HANDLE_FILE_INFORMATION status{};
+            if (::GetFileInformationByHandle(handle, &status) == 0
+                || (status.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U) {
+                (void)::CloseHandle(handle);
+                return -1;
+            }
+
+            int openFlags = _O_WRONLY | _O_APPEND;
 #ifdef _O_BINARY
             openFlags |= _O_BINARY;
 #endif
 #ifdef _O_NOINHERIT
             openFlags |= _O_NOINHERIT;
 #endif
-            return ::_open(path.c_str(), openFlags, _S_IREAD | _S_IWRITE);
+            const int fd = ::_open_osfhandle(
+                reinterpret_cast<intptr_t>(handle),
+                openFlags
+            );
+            if (fd < 0) {
+                (void)::CloseHandle(handle);
+            }
+            return fd;
 #else
             int openFlags = O_CREAT | O_WRONLY | O_APPEND;
 #ifdef O_CLOEXEC
             openFlags |= O_CLOEXEC;
 #endif
+#ifdef O_NOFOLLOW
+            openFlags |= O_NOFOLLOW;
+#else
+            // A predictable filename under /tmp must not fall back to an
+            // implementation that follows attacker-controlled symlinks.
+            return -1;
+#endif
             const int fd = ::open(path.c_str(), openFlags, 0600);
-#ifndef O_CLOEXEC
-            if (fd >= 0) {
-                (void)::fcntl(fd, F_SETFD, FD_CLOEXEC);
+            if (fd < 0) {
+                return -1;
             }
+            struct stat status {};
+            if (::fstat(fd, &status) != 0
+                || !S_ISREG(status.st_mode)
+                || status.st_uid != ::geteuid()
+                || status.st_nlink != 1
+                || ::fchmod(fd, 0600) != 0) {
+                (void)::close(fd);
+                return -1;
+            }
+#ifndef O_CLOEXEC
+            (void)::fcntl(fd, F_SETFD, FD_CLOEXEC);
 #endif
             return fd;
 #endif
@@ -1900,6 +2195,16 @@ namespace xyzzy::scopetimer {
 #endif
         }
 
+        struct LogOpenState {
+            std::string lastFailedPath;
+            std::chrono::steady_clock::time_point lastFailure{};
+            bool lastAttemptFailed{false};
+        };
+
+        static inline LogOpenState& logOpenState() noexcept {
+            return detail::singletonStorage<detail::LogOpenStateTag, LogOpenState>();
+        }
+
         /**
          * @brief Opens the default log file descriptor on first use (best-effort).
          */
@@ -1909,26 +2214,33 @@ namespace xyzzy::scopetimer {
                 return true;
             }
 
-            static std::string lastFailedPath;
-            static bool lastAttemptFailed = false;
+            try {
+                auto& state = logOpenState();
+                const std::string path = logDirectory() + "ScopeTimer.log";
+                const auto now = std::chrono::steady_clock::now();
+                constexpr auto RetryDelay = std::chrono::milliseconds{100};
 
-            const std::string path = logDirectory() + "ScopeTimer.log";
+                if (state.lastAttemptFailed
+                    && path == state.lastFailedPath
+                    && now - state.lastFailure < RetryDelay) {
+                    return false;
+                }
 
-            if (lastAttemptFailed && path == lastFailedPath) {
+                if (int newFd = openLogFileForAppend(path); newFd >= 0) {
+                    fd = newFd;
+                    state.lastAttemptFailed = false;
+                    state.lastFailedPath.clear();
+                    registerProcessCleanup();
+                    return true;
+                }
+
+                state.lastFailedPath = path;
+                state.lastFailure = now;
+                state.lastAttemptFailed = true;
+                return false;
+            } catch (...) {
                 return false;
             }
-
-            if (int newFd = openLogFileForAppend(path); newFd >= 0) {
-                fd = newFd;
-                lastAttemptFailed = false;
-                lastFailedPath.clear();
-                registerProcessCleanup();
-                return true;
-            }
-
-            lastFailedPath = path;
-            lastAttemptFailed = true;
-            return false;
         }
 
         /**
@@ -1941,10 +2253,19 @@ namespace xyzzy::scopetimer {
             static const bool registered = []() noexcept {
                 return std::atexit([]() noexcept {
                     std::lock_guard sinkStateLock(sinkConfigMutex());
+                    processCleanupStartedStorage().store(true, std::memory_order_release);
                     flushAllThreadBuffers();
                     asyncSinkFlush();
                     shutdownAsyncSink();
+                    std::lock_guard outputLock(outMutex());
                     closeLogFd();
+                    customLogSinkStorage() = nullptr;
+                    customSinkWriteStorage() = {};
+                    customSinkFlushStorage() = {};
+                    bufferedTestSinkWriteStorage() = {};
+                    activeSinkStorage().store(ActiveSink::Default, std::memory_order_release);
+                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default, std::memory_order_release);
+                    asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Default, std::memory_order_release);
                 }) == 0;
             }();
             (void)registered;
@@ -2087,7 +2408,7 @@ namespace xyzzy::scopetimer {
 #define SCOPE_TIMER(...)                                                             \
     ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
         ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION),              \
-        ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__))
+        ::xyzzy::scopetimer::detail::makeLabelData(__VA_OPT__(__VA_ARGS__)))
 #endif
 
 /**
@@ -2115,7 +2436,7 @@ namespace xyzzy::scopetimer {
             (cond),                                                                         \
             ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION),                 \
             [&]() noexcept {                                                                 \
-            return ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__);                  \
+            return ::xyzzy::scopetimer::detail::makeLabelData(__VA_OPT__(__VA_ARGS__));      \
         })
 #endif
 
@@ -2143,7 +2464,7 @@ namespace xyzzy::scopetimer {
 #define SCOPE_TIMER_HOT_PATH(...)                                                            \
     ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerHotPathInstance__, ST_UNIQ)(            \
         ::xyzzy::scopetimer::ScopeTimer::HotPathTag{},                                       \
-        ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__))
+        ::xyzzy::scopetimer::detail::makeLabelData(__VA_OPT__(__VA_ARGS__)))
 #endif
 
 #else // Release build -> no-op
@@ -2152,11 +2473,14 @@ namespace xyzzy::scopetimer {
      * @brief No-op ScopeTimer class for release builds.
      *
      * Provides a matching interface to the debug ScopeTimer but performs no timing or logging.
-     * This class uses C++17 std::string_view for parameter compatibility.
+     * This class uses C++20 std::string_view for parameter compatibility.
      */
     class ScopeTimer {
     public:
         struct HotPathTag {};
+
+        static inline constexpr std::size_t DefaultSinkFlushBytes = 16U * 1024U;
+        static inline constexpr std::size_t MaxSinkFlushBytes = 64U * 1024U * 1024U;
 
         class LogSink {
         public:
@@ -2177,28 +2501,29 @@ namespace xyzzy::scopetimer {
         ScopeTimer& operator=(const ScopeTimer&) = delete;
         ScopeTimer(ScopeTimer&&) = delete;
         ScopeTimer& operator=(ScopeTimer&&) = delete;
-        static inline void enableThreadBufferedSink(std::size_t = 16U * 1024U) noexcept {}
+        static inline void enableThreadBufferedSink(std::size_t = DefaultSinkFlushBytes) noexcept {}
         static inline void disableThreadBufferedSink() noexcept {}
-        static inline void enableAsyncSink(std::size_t = 16U * 1024U) noexcept {}
+        static inline void enableAsyncSink(std::size_t = DefaultSinkFlushBytes) noexcept {}
         static inline void disableAsyncSink() noexcept {}
-        static inline void setLogSink(LogSink&) noexcept {}
-        static inline void resetLogSink() noexcept {}
+        static inline void setLogSink(LogSink&) {}
+        static inline void resetLogSink() {}
     };
 
 #ifndef SCOPE_TIMER
 #define SCOPE_TIMER(...) \
-    do { (void)sizeof(#__VA_ARGS__); } while(0)
+    do { if constexpr (false) { __VA_OPT__(static_cast<void>(__VA_ARGS__);) } } while(0)
 #endif
 
 #ifndef SCOPE_TIMER_IF
-// Do not evaluate 'cond' or variadic args (avoid side effects); silences unused warnings
+// Do not evaluate cond or labels; the discarded branch preserves source
+// compatibility and marks instrumentation-only variables as used.
 #define SCOPE_TIMER_IF(cond, ...) \
-    do { (void)sizeof(cond); (void)sizeof(#__VA_ARGS__); } while(0)
+    do { if constexpr (false) { static_cast<void>(cond); __VA_OPT__(static_cast<void>(__VA_ARGS__);) } } while(0)
 #endif
 
 #ifndef SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK
 #define SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(...) \
-    do { (void)sizeof(#__VA_ARGS__); } while(0)
+    do { if constexpr (false) { __VA_OPT__(static_cast<void>(__VA_ARGS__);) } } while(0)
 #endif
 
 #ifndef SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK
@@ -2208,7 +2533,7 @@ namespace xyzzy::scopetimer {
 
 #ifndef SCOPE_TIMER_ENABLE_ASYNC_SINK
 #define SCOPE_TIMER_ENABLE_ASYNC_SINK(...) \
-    do { (void)sizeof(#__VA_ARGS__); } while(0)
+    do { if constexpr (false) { __VA_OPT__(static_cast<void>(__VA_ARGS__);) } } while(0)
 #endif
 
 #ifndef SCOPE_TIMER_DISABLE_ASYNC_SINK
@@ -2218,7 +2543,7 @@ namespace xyzzy::scopetimer {
 
 #ifndef SCOPE_TIMER_HOT_PATH
 #define SCOPE_TIMER_HOT_PATH(...) \
-    do { (void)sizeof(#__VA_ARGS__); } while(0)
+    do { if constexpr (false) { __VA_OPT__(static_cast<void>(__VA_ARGS__);) } } while(0)
 #endif
 
 #endif // NDEBUG
@@ -2271,45 +2596,66 @@ inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite(const char* d
         return;
     }
 
-    auto& buffer = threadLocalBuffer();
+    auto* buffer = threadLocalBuffer();
+    if (buffer == nullptr) {
+        return;
+    }
     const std::size_t flushBytes = threadBufferFlushBytes();
-    ensureThreadBufferCapacity(buffer, flushBytes);
+    if (!ensureThreadBufferCapacity(*buffer, flushBytes)) {
+        return;
+    }
 
     if (len >= flushBytes) {
-        flushThreadBuffer(buffer);
+        flushThreadBuffer(*buffer);
         publishBufferedSinkPayload(data, len);
         return;
     }
 
-    if (buffer.size + len > flushBytes) {
-        flushThreadBuffer(buffer);
+    if (buffer->size + len > flushBytes) {
+        flushThreadBuffer(*buffer);
     }
 
-    std::memcpy(buffer.data.data() + buffer.size, data, len);
-    buffer.size += len;
-    if (buffer.size >= flushBytes) {
-        flushThreadBuffer(buffer);
+    std::memcpy(buffer->data.data() + buffer->size, data, len);
+    buffer->size += len;
+    if (buffer->size >= flushBytes) {
+        flushThreadBuffer(*buffer);
     }
 }
 
 inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkFlush() noexcept {
-    flushThreadBuffer(threadLocalBuffer(), BufferedSinkFlushMode::Forced);
+    if (auto* buffer = threadLocalBuffer()) {
+        flushThreadBuffer(*buffer, BufferedSinkFlushMode::Forced);
+    }
 }
 
 inline void xyzzy::scopetimer::ScopeTimer::asyncSinkWrite(const char* data, std::size_t len) noexcept {
     if (len == 0) {
         return;
     }
+    if (len > MaxAsyncSinkQueuedBytes) {
+        return;
+    }
 
     auto batch = acquireAsyncSinkBatch(len);
-    std::memcpy(batch.data.data(), data, len);
+    if (!batch) {
+        return;
+    }
+    std::memcpy(batch->data.data(), data, len);
 
     auto& state = asyncSinkState();
     bool notifyWorker = false;
     {
         std::lock_guard lock(state.mutex);
+        if (!state.running || len > MaxAsyncSinkQueuedBytes || state.queuedBytes > MaxAsyncSinkQueuedBytes - len) {
+            return;
+        }
         notifyWorker = state.queue.empty();
-        state.queue.emplace_back(std::move(batch));
+        try {
+            state.queue.emplace_back(std::move(*batch));
+            state.queuedBytes += len;
+        } catch (...) {
+            return;
+        }
     }
     if (notifyWorker) {
         state.ready.notify_one();
@@ -2317,6 +2663,9 @@ inline void xyzzy::scopetimer::ScopeTimer::asyncSinkWrite(const char* data, std:
 }
 
 inline void xyzzy::scopetimer::ScopeTimer::asyncSinkFlush() noexcept {
+    if (isAsyncSinkWorkerThread()) {
+        return;
+    }
     auto& state = asyncSinkState();
     std::unique_lock lock(state.mutex);
     if (!state.running) {

@@ -1,5 +1,5 @@
 /*
- * ScopeTimer - lightweight C++17 scope timing utility
+ * ScopeTimer - lightweight C++20 scope timing utility
  * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify
@@ -25,6 +25,7 @@
 
 #include <charconv>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -34,8 +35,9 @@ namespace xyzzy::scopetimer::example_options {
 
 inline constexpr unsigned MaxDemoIterations = 32U;
 inline constexpr unsigned MaxBenchmarkIterations = 100U;
-inline constexpr unsigned MaxBenchmarkThreads = 256U;
+inline constexpr unsigned MaxBenchmarkThreads = 32U;
 inline constexpr std::size_t MaxBenchmarkSinkBytes = 64U * 1024U * 1024U;
+inline constexpr std::uint64_t MaxBenchmarkTimerRecords = 10'000'000U;
 
 class OptionError final : public std::runtime_error {
 public:
