@@ -104,6 +104,8 @@ public:
         test_memory_sink_output_is_plain_text();
         test_memory_sink_without_flush();
         test_custom_sink_reentrancy_is_safe();
+        test_custom_sink_configuration_is_quiescent();
+        test_custom_sink_flush_reentrancy_is_safe();
         test_long_log_line_truncates_but_still_emits();
         test_summarize_script_handles_nanos();
         test_default_sink_write_short_circuits();
@@ -137,6 +139,7 @@ public:
         test_fmt_auto_seconds_branch();
         test_fmt_auto_nanos_branch();
         test_buffer_append_helpers_cover_edge_cases();
+        test_reserved_buffer_helpers_cover_large_thread_ids();
         test_format_elapsed_impl_covers_small_buffer_failures();
         test_fmt_nanos_handles_truncation_and_zero_buffer();
         test_log_line_builders_handle_zero_buffers();
@@ -567,6 +570,57 @@ private:
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
         expect(true, "throwing custom sink callbacks do not terminate ScopeTimer users");
 
+    }
+
+    static void test_custom_sink_configuration_is_quiescent() {
+        std::size_t activeWriteCount = 0U;
+        std::size_t replacementWriteCount = 0U;
+        CapturingLogSink replacementSink;
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(
+            [&activeWriteCount, &replacementWriteCount, &replacementSink](const char*, std::size_t) {
+                ++activeWriteCount;
+                ::xyzzy::scopetimer::ScopeTimer::enableThreadBufferedSink();
+                ::xyzzy::scopetimer::ScopeTimer::disableThreadBufferedSink();
+                ::xyzzy::scopetimer::ScopeTimer::enableAsyncSink();
+                ::xyzzy::scopetimer::ScopeTimer::setLogSink(replacementSink);
+                ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(
+                    [&replacementWriteCount](const char*, std::size_t) {
+                        ++replacementWriteCount;
+                    },
+                    {}
+                );
+            },
+            {}
+        );
+        {
+            SCOPE_TIMER("tests:custom_sink:configuration");
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+
+        expect(activeWriteCount == 1U,
+               "custom sink configuration attempts leave the active callback intact");
+        expect(replacementWriteCount == 0U,
+               "custom sink configuration is deferred until the callback has returned");
+    }
+
+    static void test_custom_sink_flush_reentrancy_is_safe() {
+        std::size_t flushCount = 0U;
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(
+            {},
+            [&flushCount] {
+                ++flushCount;
+                ::xyzzy::scopetimer::ScopeTimer::flushActiveSink(
+                    ::xyzzy::scopetimer::ScopeTimer::ActiveSink::Custom
+                );
+            }
+        );
+        ::xyzzy::scopetimer::ScopeTimer::flushActiveSink(
+            ::xyzzy::scopetimer::ScopeTimer::ActiveSink::Custom
+        );
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+
+        expect(flushCount == 1U,
+               "custom sink flush callbacks cannot recurse into themselves");
     }
 
     static void test_public_log_sink_captures_output() {
@@ -1417,6 +1471,31 @@ private:
         ::xyzzy::scopetimer::ScopeTimer::appendThreadIdTruncating(out, threadId + sizeof(threadId), 1001U);
         expect(std::string_view(threadId, 4U) == "1001",
                "appendThreadIdTruncating formats thread ids above the fixed-width range");
+    }
+
+    static void test_reserved_buffer_helpers_cover_large_thread_ids() {
+        char reserved[4] = {};
+        char* reservedOut = reserved;
+        ::xyzzy::scopetimer::ScopeTimer::appendBytesTruncatingReserved(
+            reservedOut,
+            reserved + sizeof(reserved),
+            "payload",
+            7U,
+            sizeof(reserved)
+        );
+        expect(reservedOut == reserved,
+               "appendBytesTruncatingReserved preserves fully reserved output space");
+
+        char threadId[16] = {};
+        char* threadIdOut = threadId;
+        ::xyzzy::scopetimer::ScopeTimer::appendThreadIdTruncatingReserved(
+            threadIdOut,
+            threadId + sizeof(threadId),
+            1001U,
+            0U
+        );
+        expect(std::string_view(threadId, static_cast<std::size_t>(threadIdOut - threadId)) == "1001",
+               "appendThreadIdTruncatingReserved formats thread ids beyond the fixed-width range");
     }
 
     static void test_format_elapsed_impl_covers_small_buffer_failures() {
