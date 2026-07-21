@@ -1,5 +1,5 @@
 /*
- * ScopeTimer - lightweight C++17 scope timing utility
+ * ScopeTimer - lightweight C++20 scope timing utility
  * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify
@@ -232,6 +232,18 @@ static void hotPathBenchmark(int iterations, const BenchmarkRuntimeOptions& runt
     const int rounds = std::max(1, iterations) * 12;
     const int threadCount = runtimeOptions.threadCount;
     const BenchTimerMode timerMode = runtimeOptions.timerMode;
+
+    const auto timerRecords = static_cast<std::uint64_t>(iterations)
+        * static_cast<std::uint64_t>(rounds)
+        * 256U
+        * static_cast<std::uint64_t>(threadCount);
+    if (timerRecords > options::MaxBenchmarkTimerRecords) {
+        throw options::OptionError(
+            "benchmark workload would emit " + std::to_string(timerRecords) +
+            " timer records; reduce --iterations or SCOPE_TIMER_BENCH_THREADS "
+            "(maximum " + std::to_string(options::MaxBenchmarkTimerRecords) + ")"
+        );
+    }
 
     SCOPE_TIMER("hotPath:benchmark");
     if (threadCount == 1) {

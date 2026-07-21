@@ -103,6 +103,26 @@ class ManagedBuildDirectoryTests(unittest.TestCase):
         self.assertNotIn("build-docs.log", transcript)
         self.assertNotIn(str(self.repo_root), transcript)
 
+    def test_generated_transcript_does_not_overlap_head_and_tail(self) -> None:
+        outputs = [
+            mock.Mock(stdout="\n".join(f"configure-{index}" for index in range(50)) + "\n"),
+            mock.Mock(stdout="\n".join(f"build-{index}" for index in range(50)) + "\n"),
+            mock.Mock(stdout="\n".join(f"test-{index}" for index in range(50)) + "\n"),
+        ]
+        build_doc = self.base / "BUILD.md"
+
+        with mock.patch.object(refresh_docs, "run_command", side_effect=outputs):
+            refresh_docs.refresh_build_doc(
+                self.repo_root,
+                self.docs_build_dir,
+                build_doc,
+            )
+
+        transcript = build_doc.read_text(encoding="utf-8")
+        self.assertEqual(transcript.count("configure-49"), 1)
+        self.assertEqual(transcript.count("build-49"), 1)
+        self.assertEqual(transcript.count("test-49"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

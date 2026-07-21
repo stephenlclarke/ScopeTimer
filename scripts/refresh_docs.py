@@ -50,6 +50,7 @@ def run_command(
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
+    input_text: str | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = os.environ.copy()
@@ -62,6 +63,7 @@ def run_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        input=input_text,
         check=False,
     )
     if check and completed.returncode != 0:
@@ -169,7 +171,8 @@ def refresh_build_doc(
     log_text = "".join(log_parts).replace(str(repo_root), ".").strip()
     log_lines = log_text.splitlines()
     head = "\n".join(log_lines[:BUILD_HEAD_LINES])
-    tail = "\n".join(log_lines[-BUILD_TAIL_LINES:]) if len(log_lines) > BUILD_HEAD_LINES else ""
+    tail_start = max(BUILD_HEAD_LINES, len(log_lines) - BUILD_TAIL_LINES)
+    tail = "\n".join(log_lines[tail_start:])
 
     managed_refresh_cmd = (
         "> cmake --build "
@@ -313,12 +316,14 @@ def run_summary(repo_root: Path, demo_binary: Path) -> str:
             },
         )
         log_file = tmp_dir / "ScopeTimer.log"
-        process_cmd = (
-            f"scripts/process_scope_times.sh {log_file} | scripts/summarize_scope_times.sh"
-        )
-        summary = run_command(
-            ["bash", "-lc", process_cmd],
+        processed = run_command(
+            [str(repo_root / "scripts" / "process_scope_times.sh"), str(log_file)],
             cwd=repo_root,
+        ).stdout
+        summary = run_command(
+            [str(repo_root / "scripts" / "summarize_scope_times.sh")],
+            cwd=repo_root,
+            input_text=processed,
         ).stdout.rstrip()
         return summary
 

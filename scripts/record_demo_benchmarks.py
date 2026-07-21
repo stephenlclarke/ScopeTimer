@@ -34,6 +34,7 @@ SINK_BYTES_PLACEHOLDER = "{sink_bytes}"
 THREADS_PLACEHOLDER = "{threads}"
 ASYNC_SINK_BYTES = "65536"
 COMPARISON_FINGERPRINT_VERSION = 1
+MAX_MATRIX_BENCHMARK_EXECUTIONS = 512
 DEFAULT_REPORT_CONFIG: dict[str, Any] = {
     "binary": "./build-review/benchmark-build/Benchmark",
     "scenario": "hotpath-bench",
@@ -227,7 +228,7 @@ def normalize_args(args: argparse.Namespace, repo_root: Path) -> MatrixConfig:
     if not build_dir.is_absolute():
         build_dir = repo_root / build_dir
 
-    return MatrixConfig(
+    config = MatrixConfig(
         binary=binary,
         scenario=args.scenario,
         iterations=benchmark_demo.bounded_positive(
@@ -252,6 +253,15 @@ def normalize_args(args: argparse.Namespace, repo_root: Path) -> MatrixConfig:
         cxx_flags=str(args.cxx_flags),
         refresh_report_only=bool(args.refresh_report_only),
     )
+    if not config.refresh_report_only:
+        executions = len(PROFILE_DEFS) * (2 + (2 * config.runs))
+        if executions > MAX_MATRIX_BENCHMARK_EXECUTIONS:
+            raise benchmark_demo.BenchmarkConfigurationError(
+                "benchmark matrix would launch "
+                f"{executions} benchmark processes; reduce --runs "
+                f"(maximum {MAX_MATRIX_BENCHMARK_EXECUTIONS} total processes)"
+            )
+    return config
 
 
 def run_git(args: list[str], repo_root: Path) -> str:
@@ -796,6 +806,12 @@ def load_history(path: Path) -> dict[str, Any]:
         )
     if not isinstance(data.get("history"), list):
         raise SystemExit(f"Invalid benchmark history format in {path}")
+    for entry in data["history"]:
+        if isinstance(entry, dict) and isinstance(entry.get("results"), list):
+            # Rebuild legacy summaries so persisted benchmark reports no longer
+            # rank aggregate multi-thread throughput against single-thread
+            # measurements as though they were interchangeable latency values.
+            entry["speed_summary"] = build_speed_summary(entry["results"])
     return data
 
 
@@ -843,7 +859,7 @@ def format_yes_no(value: bool) -> str:
 def format_metric_value(metric_name: str | None, value: float | None, *, signed: bool = False) -> str:
     if value is None:
         return "n/a"
-    if metric_name == "approx_per_record_us":
+    if metric_name in {"approx_per_record_us", "throughput_cost_per_record_us"}:
         return f"{value:+.3f}us" if signed else f"{value:.3f}us"
     if metric_name == "delta_mean_s":
         return f"{value:+.6f}s" if signed else f"{value:.6f}s"
@@ -869,10 +885,18 @@ def comparison_delta_text(comparison: dict[str, Any]) -> str:
 
 
 def speed_profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
-    per_record_us = profile.get("approx_per_record_us")
+    per_record_us = profile.get(
+        "throughput_cost_per_record_us",
+        profile.get("approx_per_record_us"),
+    )
     per_record_ns = None
     if per_record_us is not None:
         per_record_ns = float(per_record_us) * 1000.0
+
+    thread_count = int(profile.get("thread_count", profile.get("env", {}).get("SCOPE_TIMER_BENCH_THREADS", 1)))
+    measurement = profile.get("per_record_measurement")
+    if measurement not in {"single_thread_cost_estimate", "aggregate_throughput_cost"}:
+        measurement = "single_thread_cost_estimate" if thread_count == 1 else "aggregate_throughput_cost"
 
     return {
         "name": profile.get("name"),
@@ -883,49 +907,55 @@ def speed_profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
         "delta_mean_s": profile.get("delta_mean_s"),
         "enabled_mean_s": profile.get("enabled_mean_s"),
         "enabled_log_lines": profile.get("enabled_log_lines", 0),
+        "thread_count": thread_count,
+        "per_record_measurement": measurement,
     }
 
 
 def build_speed_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     profile_summaries = [speed_profile_summary(profile) for profile in results]
-    per_record_profiles = [
+    single_thread_profiles = [
         profile for profile in profile_summaries
         if profile.get("approx_per_record_us") is not None
+        and profile.get("per_record_measurement") == "single_thread_cost_estimate"
     ]
-    fastest = None
-    if per_record_profiles:
-        fastest = min(per_record_profiles, key=lambda profile: float(profile["approx_per_record_us"]))
+    fastest_single_thread = None
+    if single_thread_profiles:
+        fastest_single_thread = min(
+            single_thread_profiles,
+            key=lambda profile: float(profile["approx_per_record_us"]),
+        )
 
     return {
-        "fastest_profile": fastest,
+        "fastest_single_thread_profile": fastest_single_thread,
         "profiles": profile_summaries,
     }
 
 
 def render_speed_breakdown_lines(summary: dict[str, Any]) -> list[str]:
-    fastest = summary.get("fastest_profile")
+    fastest = summary.get("fastest_single_thread_profile")
     lines = ["", "## Current speed breakdown", ""]
     if fastest:
         per_record_us = fastest.get("approx_per_record_us")
         lines.extend(
             [
                 (
-                    "- Fastest measured configuration: "
+                    "- Fastest single-thread measured configuration: "
                     f"{fastest.get('label', 'unknown')} at "
                     f"`{format_us(per_record_us)}/record` "
                     f"(`{format_ns_from_us(per_record_us)}/record`)."
                 ),
-                f"- Fastest configuration settings: {format_env_summary(fastest.get('env', {}))}.",
+                f"- Fastest single-thread configuration settings: {format_env_summary(fastest.get('env', {}))}.",
                 "",
             ]
         )
     else:
-        lines.extend(["- Fastest measured configuration: unavailable.", ""])
+        lines.extend(["- Fastest single-thread measured configuration: unavailable.", ""])
 
     lines.extend(
         [
-            "| Configuration | Per record | Nanoseconds per record | Mean overhead | Enabled mean | Key settings |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| Configuration | Measurement | Cost per record | Nanoseconds per record | Mean overhead | Enabled mean | Key settings |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for profile in summary.get("profiles", []):
@@ -933,6 +963,7 @@ def render_speed_breakdown_lines(summary: dict[str, Any]) -> list[str]:
         lines.append(
             "| "
             f"{profile.get('label', 'unknown')} | "
+            f"{'Single-thread estimate' if profile.get('per_record_measurement') == 'single_thread_cost_estimate' else 'Aggregate throughput cost'} | "
             f"`{format_us(per_record_us)}` | "
             f"`{format_ns_from_us(per_record_us)}` | "
             f"`{format_seconds(profile.get('delta_mean_s'))}` | "
@@ -1113,8 +1144,8 @@ def render_report(
             "",
             "## Profile results",
             "",
-            "| Profile | Per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
+            "| Profile | Measurement | Cost per record | Mean overhead | Enabled mean | Log lines | Delta vs main baseline | Status |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
 
@@ -1123,7 +1154,8 @@ def render_report(
         lines.append(
             "| "
             f"{profile.get('label', profile.get('name', 'unknown'))} | "
-            f"`{format_us(profile.get('approx_per_record_us'))}` | "
+            f"{'Single-thread estimate' if profile.get('per_record_measurement') == 'single_thread_cost_estimate' else 'Aggregate throughput cost'} | "
+            f"`{format_us(profile.get('throughput_cost_per_record_us', profile.get('approx_per_record_us')))}` | "
             f"`{format_seconds(profile.get('delta_mean_s'))}` "
             f"({format_percent(profile.get('overhead_mean_pct'))}) | "
             f"`{format_seconds(profile.get('enabled_mean_s'))}` | "
@@ -1214,9 +1246,15 @@ def comparison_for_profile(
             "summary": "main baseline unavailable for this profile",
         }
 
-    metric_name = "approx_per_record_us"
+    metric_name = "throughput_cost_per_record_us"
     current_value = current_report.get(metric_name)
     previous_value = previous_profile.get(metric_name)
+    if current_value is None and previous_value is None:
+        # Keep historical benchmark entries comparable while new entries use
+        # the less misleading throughput-specific metric name.
+        metric_name = "approx_per_record_us"
+        current_value = current_report.get(metric_name)
+        previous_value = previous_profile.get(metric_name)
     if current_value is None or previous_value is None:
         metric_name = "delta_mean_s"
         current_value = current_report.get(metric_name)
@@ -1243,7 +1281,11 @@ def comparison_for_profile(
         status = "slower"
         indicator = "slower"
 
-    unit = "us/record" if metric_name == "approx_per_record_us" else "s mean overhead"
+    unit = (
+        "us/record throughput cost"
+        if metric_name in {"throughput_cost_per_record_us", "approx_per_record_us"}
+        else "s mean overhead"
+    )
     summary = (
         f"{status} vs {baseline_entry['git']['short_commit']} "
         f"({previous_value:.3f} -> {current_value:.3f} {unit}, {delta_pct:+.1f}%)"
@@ -1278,6 +1320,7 @@ def main() -> int:
         config = normalize_args(parse_args(), repo_root)
         if config.refresh_report_only:
             history = load_history(config.history_path)
+            save_history(config.history_path, history)
             save_report(config.report_path, history, repo_root, config.history_path)
             print(f"Saved benchmark report: {config.report_path}")
             return 0

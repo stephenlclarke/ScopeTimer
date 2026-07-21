@@ -1,5 +1,5 @@
 /*
- * ScopeTimer - lightweight C++17 scope timing utility
+ * ScopeTimer - lightweight C++20 scope timing utility
  * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify
@@ -45,6 +45,8 @@
 #include <dirent.h>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <stdexcept>
 #include <cerrno>
 #include <fcntl.h>
 
@@ -59,6 +61,10 @@ static_assert(!std::is_copy_constructible_v<ScopeTimer>);
 static_assert(!std::is_copy_assignable_v<ScopeTimer>);
 static_assert(!std::is_move_constructible_v<ScopeTimer>);
 static_assert(!std::is_move_assignable_v<ScopeTimer>);
+
+// Deliberately destroyed after the atexit handler registered by buffered or
+// async modes. Child probes below exercise static-lifetime teardown ordering.
+static ScopeTimer staticLifetimeTimer("tests:static:lifetime", "tests:static:lifetime");
 
 class ScopeTimer_TestFriend {
 public:
@@ -83,6 +89,7 @@ public:
         test_init_exe_path_default_path();
         test_labelarg_temporary_string();
         test_labelarg_literal_and_pointer_variants();
+        test_label_array_lifetime_is_owned();
         test_labeldata_manual_empty_view();
         test_labelarg_empty_literal_to_labeldata();
         test_labeldata_constructor_default_view();
@@ -96,6 +103,7 @@ public:
         test_memory_sink_captures_output();
         test_memory_sink_output_is_plain_text();
         test_memory_sink_without_flush();
+        test_custom_sink_reentrancy_is_safe();
         test_long_log_line_truncates_but_still_emits();
         test_summarize_script_handles_nanos();
         test_default_sink_write_short_circuits();
@@ -118,6 +126,8 @@ public:
         test_thread_buffered_sink_defers_target_flush_until_disable();
         test_thread_buffered_sink_flushes_on_disable();
         test_thread_buffered_sink_flushes_on_thread_exit();
+        test_thread_buffer_registry_does_not_accumulate_dead_entries();
+        test_sink_flush_size_is_bounded();
         test_async_sink_flushes_on_disable();
         test_async_sink_flush_calls_custom_sink();
         test_async_sink_reconfiguration_keeps_worker_running();
@@ -146,6 +156,8 @@ public:
         test_logdir_edge_cases_child_process();
         test_logfile_null_branch();
         test_logfile_failure_cache_branch();
+        test_default_sink_rejects_symlink_logfile();
+        test_static_lifetime_child_probes();
         test_log_fd_has_cloexec();
 
         const int failures = s_failures;
@@ -373,6 +385,8 @@ private:
         busyFor(5us);
         SCOPE_TIMER_IF(false, "tests:conditional:off");
         busyFor(5us);
+        SCOPE_TIMER_IF(true);
+        busyFor(5us);
         expect(true, "conditional timer executed");
     }
 
@@ -474,6 +488,12 @@ private:
         expect(&first == &second, "logDirectory returns same cached reference after override");
         expect(second == "/tmp/cached_dir/", "logDirectory ignores env changes after override");
 
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests("/tmp/cached_dir\\");
+        expect(
+            ::xyzzy::scopetimer::ScopeTimer::logDirectory() == "/tmp/cached_dir\\/",
+            "POSIX log directories retain a trailing backslash as a normal path character"
+        );
+
         ::unsetenv("SCOPE_TIMER_DIR");
         ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests();
     }
@@ -518,6 +538,35 @@ private:
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
         expect(sinkCaptureBuffer().find("tests:memory_sink_no_flush") != std::string::npos,
                "custom log sink without flush still captures output");
+    }
+
+    static void test_custom_sink_reentrancy_is_safe() {
+        std::size_t writeCount = 0U;
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(
+            [&writeCount](const char*, std::size_t) {
+                ++writeCount;
+                SCOPE_TIMER("tests:custom_sink:nested");
+            },
+            {}
+        );
+        {
+            SCOPE_TIMER("tests:custom_sink:outer");
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+
+        expect(writeCount == 1U,
+               "custom sink callbacks can create nested timers without deadlocking or recursing");
+
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(
+            [](const char*, std::size_t) { throw std::runtime_error("test callback failure"); },
+            {}
+        );
+        {
+            SCOPE_TIMER("tests:custom_sink:throwing");
+        }
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(true, "throwing custom sink callbacks do not terminate ScopeTimer users");
+
     }
 
     static void test_public_log_sink_captures_output() {
@@ -623,6 +672,8 @@ private:
                "overlong log line preserves the leading label prefix");
         expect(sinkCaptureBuffer().find('\0') == std::string::npos,
                "overlong log line remains plain text");
+        expect(sinkCaptureBuffer().find("elapsed=") != std::string::npos,
+               "overlong log line retains elapsed timing data");
         expect(sinkCaptureBuffer().back() == '\n',
                "overlong log line retains its terminating newline");
         expect(std::count(sinkCaptureBuffer().begin(), sinkCaptureBuffer().end(), '\n') == 2,
@@ -639,6 +690,13 @@ private:
                "summarize_scope_times.sh counts nanosecond entries");
         expect(output.find("500ns") != std::string::npos,
                "summarize_scope_times.sh preserves nanosecond formatting");
+
+        const std::string hotPathCmd =
+            "printf '%s\\n' '[tests:hot] elapsed=750ns' | " + shellEscape(script);
+        const std::string hotPathOutput = runShellCommandCapture(hotPathCmd);
+        expect(hotPathOutput.find("count=1") != std::string::npos
+               && hotPathOutput.find("750ns") != std::string::npos,
+               "summarize_scope_times.sh includes hot-path records");
     }
 
     static void test_default_sink_write_short_circuits() {
@@ -714,8 +772,8 @@ private:
 
     static void test_scope_timer_literal_ctor_borrows_label() {
         ::xyzzy::scopetimer::ScopeTimer timer("tests:label:ctor_scope", "tests:label:ctor_literal");
-        expect(::xyzzy::scopetimer::ScopeTimer::labelUsesBorrowedStorageForTests(timer),
-               "ScopeTimer literal ctor borrows stable label storage");
+        expect(::xyzzy::scopetimer::ScopeTimer::labelUsesLocalBufferForTests(timer),
+               "ScopeTimer literal ctor owns label storage");
         timer.disabled_ = true;
     }
 
@@ -756,7 +814,7 @@ private:
 
     static void test_labelarg_literal_and_pointer_variants() {
         verifyLabelDataResult("string literal", "tests:label:literal",
-                              false, true, ::xyzzy::scopetimer::detail::makeLabelData("tests:label:literal"));
+                              true, false, ::xyzzy::scopetimer::detail::makeLabelData("tests:label:literal"));
 
         verifyLabelDataResult("string literal empty", "ScopeTimer",
                               false, true, ::xyzzy::scopetimer::detail::makeLabelData(""));
@@ -775,6 +833,23 @@ private:
 
         verifyLabelResult("default LabelArg", "ScopeTimer",
                           false, true, ::xyzzy::scopetimer::detail::LabelArg{});
+    }
+
+    static void test_label_array_lifetime_is_owned() {
+        sinkCaptureBuffer().clear();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+
+        std::optional<::xyzzy::scopetimer::ScopeTimer> timer;
+        {
+            char localLabel[] = "tests:label:automatic";
+            timer.emplace("tests:label:array_lifetime", localLabel);
+            localLabel[0] = 'X';
+        }
+        timer.reset();
+
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        expect(sinkCaptureBuffer().find("tests:label:automatic") != std::string::npos,
+               "automatic char-array labels are copied until timer destruction");
     }
 
     static void test_labelarg_pointer_copies_input() {
@@ -956,6 +1031,57 @@ private:
                "thread-buffered sink flushes worker-thread data on thread exit");
         SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
         ::xyzzy::scopetimer::ScopeTimer::setBufferedSinkTargetForTests(nullptr);
+    }
+
+    static void test_thread_buffer_registry_does_not_accumulate_dead_entries() {
+        SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(1024U);
+        const auto baseline = ::xyzzy::scopetimer::ScopeTimer::snapshotThreadBuffers().size();
+
+        std::thread worker([] {
+            ::xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite("x", 1U);
+        });
+        worker.join();
+
+        const auto afterWorker = ::xyzzy::scopetimer::ScopeTimer::snapshotThreadBuffers().size();
+        SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+        expect(afterWorker == baseline,
+               "thread-buffer registry removes entries as worker threads exit");
+    }
+
+    static void test_sink_flush_size_is_bounded() {
+        SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(std::numeric_limits<std::size_t>::max());
+        expect(
+            ::xyzzy::scopetimer::ScopeTimer::threadBufferFlushBytes()
+                == ::xyzzy::scopetimer::ScopeTimer::MaxSinkFlushBytes,
+            "thread-buffered sink clamps oversized flush thresholds"
+        );
+        SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();
+
+        SCOPE_TIMER_ENABLE_ASYNC_SINK(std::numeric_limits<std::size_t>::max());
+        expect(
+            ::xyzzy::scopetimer::ScopeTimer::threadBufferFlushBytes()
+                == ::xyzzy::scopetimer::ScopeTimer::MaxSinkFlushBytes,
+            "async sink clamps oversized flush thresholds"
+        );
+        SCOPE_TIMER_DISABLE_ASYNC_SINK();
+
+        auto& asyncState = ::xyzzy::scopetimer::ScopeTimer::asyncSinkState();
+        {
+            std::lock_guard lock(asyncState.mutex);
+            asyncState.queue.clear();
+            asyncState.queuedBytes = ::xyzzy::scopetimer::ScopeTimer::MaxAsyncSinkQueuedBytes;
+            asyncState.running = true;
+        }
+        ::xyzzy::scopetimer::ScopeTimer::asyncSinkWrite("drop", 4U);
+        bool queueStayedBounded = false;
+        {
+            std::lock_guard lock(asyncState.mutex);
+            queueStayedBounded = asyncState.queue.empty()
+                && asyncState.queuedBytes == ::xyzzy::scopetimer::ScopeTimer::MaxAsyncSinkQueuedBytes;
+            asyncState.queuedBytes = 0U;
+            asyncState.running = false;
+        }
+        expect(queueStayedBounded, "async sink drops records when its queue budget is exhausted");
     }
 
     static void test_async_sink_flushes_on_disable() {
@@ -1529,6 +1655,31 @@ private:
             }
             return 0;
         }
+        if (mode == "static_buffered") {
+            SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(4096U);
+            {
+                SCOPE_TIMER("tests:static:buffered");
+            }
+            return 0;
+        }
+        if (mode == "static_async") {
+            SCOPE_TIMER_ENABLE_ASYNC_SINK(4096U);
+            {
+                SCOPE_TIMER("tests:static:async");
+            }
+            return 0;
+        }
+        if (mode == "static_failure_cache") {
+            const std::string missingDir = "/tmp/scopetimer_static_missing_" + std::to_string(::getpid());
+            ::rmdir(missingDir.c_str());
+            ::setenv("SCOPE_TIMER_DIR", missingDir.c_str(), 1);
+            ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(missingDir);
+            ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+            {
+                SCOPE_TIMER("tests:static:failure_cache");
+            }
+            return 0;
+        }
         if (mode == "walltime_off") {
             SCOPE_TIMER("tests:walltime:off");
             busyFor(100us);
@@ -1775,8 +1926,66 @@ private:
         bool secondAttempt = ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
         expect(!secondAttempt, "ensureLogFdOpen skips repeated attempts for same bad path");
 
+        std::this_thread::sleep_for(110ms);
+        const int mkdirResult = ::mkdir(bogus.c_str(), 0700);
+        const bool recovered = mkdirResult == 0
+            && ::xyzzy::scopetimer::ScopeTimer::ensureLogFdOpen();
+        expect(recovered, "ensureLogFdOpen retries and recovers after a transient failure");
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+        std::remove((bogus + "/ScopeTimer.log").c_str());
+        ::rmdir(bogus.c_str());
+
         ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
         ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
+    }
+
+    static void test_default_sink_rejects_symlink_logfile() {
+        char templ[] = "/tmp/scopetimer_symlinkXXXXXX";
+        char* rawDir = ::mkdtemp(templ);
+        if (!rawDir) {
+            expect(false, "created temporary directory for symlink log test");
+            return;
+        }
+        const std::string dir = rawDir;
+        const std::string target = dir + "/target";
+        const std::string link = dir + "/ScopeTimer.log";
+        {
+            std::ofstream output(target, std::ios::binary);
+            output << "sentinel";
+        }
+        const int linkResult = ::symlink(target.c_str(), link.c_str());
+
+        ::setenv("SCOPE_TIMER_DIR", dir.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(dir);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+        ::xyzzy::scopetimer::ScopeTimer::defaultSinkWrite("must-not-follow", 15U);
+
+        std::ifstream input(target, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        expect(
+            linkResult == 0
+                && ::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1
+                && content == "sentinel",
+            "default sink refuses symlinked ScopeTimer.log files"
+        );
+
+        ::unlink(link.c_str());
+        std::remove(target.c_str());
+        ::rmdir(dir.c_str());
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
+    }
+
+    static void test_static_lifetime_child_probes() {
+        for (const char* mode : {"static_buffered", "static_async", "static_failure_cache"}) {
+            const int rc = run_child_with_env({
+                {"SCOPETIMER_PROBE", mode},
+                {"SCOPE_TIMER_DIR", s_test_log_directory},
+            });
+            const std::string message = std::string("static timer teardown probe '")
+                + mode + "' exits cleanly";
+            expect(rc == 0, message.c_str());
+        }
     }
 
     static void test_log_fd_has_cloexec() {

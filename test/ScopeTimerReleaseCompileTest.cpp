@@ -1,5 +1,5 @@
 /*
- * ScopeTimer - lightweight C++17 scope timing utility
+ * ScopeTimer - lightweight C++20 scope timing utility
  * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify
@@ -46,8 +46,18 @@ int main() {
     ScopeTimer hotPathTimer(ScopeTimer::HotPathTag{}, "release:hot-path");
 
     int sideEffects = 0;
+    struct Flags {
+        unsigned enabled : 1;
+    } flags{1U};
+    const char* instrumentationOnlyLabel = "release:instrumentation-only";
+    const auto lambdaCondition = [&flags] { return flags.enabled != 0U; };
+
+    SCOPE_TIMER();
     SCOPE_TIMER(++sideEffects);
     SCOPE_TIMER_IF(++sideEffects, ++sideEffects);
+    SCOPE_TIMER(instrumentationOnlyLabel);
+    SCOPE_TIMER_IF(flags.enabled, instrumentationOnlyLabel);
+    SCOPE_TIMER_IF(lambdaCondition());
     SCOPE_TIMER_HOT_PATH(++sideEffects);
     SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(++sideEffects);
     SCOPE_TIMER_DISABLE_THREAD_BUFFERED_SINK();

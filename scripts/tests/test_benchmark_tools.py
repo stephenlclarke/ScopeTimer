@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -225,6 +226,26 @@ class BenchmarkProbeTests(unittest.TestCase):
             ):
                 benchmark_demo.probe_benchmark_binary(binary)
 
+    def test_benchmark_run_timeout_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(
+                benchmark_demo.subprocess,
+                "run",
+                side_effect=benchmark_demo.subprocess.TimeoutExpired("Benchmark", 60),
+            ):
+                with self.assertRaisesRegex(
+                    benchmark_demo.BenchmarkInvariantError,
+                    "benchmark run timed out",
+                ):
+                    benchmark_demo.run_once(
+                        Path("Benchmark"),
+                        iterations=1,
+                        scenario="hotpath-bench",
+                        enabled=True,
+                        log_dir=Path(temp),
+                        extra_env={},
+                    )
+
 
 class BenchmarkReportTests(unittest.TestCase):
     ENABLED_PROBE = {
@@ -296,7 +317,8 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(report["expected_enabled_records"], 3_075)
         self.assertEqual(report["instrumentation_probe"], self.ENABLED_PROBE)
         probe.assert_called_once_with(Path("Benchmark"))
-        self.assertAlmostEqual(float(report["approx_per_record_us"]), 1.0)
+        self.assertAlmostEqual(float(report["throughput_cost_per_record_us"]), 1.0)
+        self.assertEqual(report["per_record_measurement"], "single_thread_cost_estimate")
 
     def test_null_sink_uses_modeled_record_denominator(self) -> None:
         calls: list[bool] = []
@@ -324,7 +346,7 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(report["per_record_denominator"], 3_075)
         self.assertFalse(report["profile_emits_output"])
         probe.assert_called_once_with(Path("Benchmark"))
-        self.assertAlmostEqual(float(report["approx_per_record_us"]), 1.0)
+        self.assertAlmostEqual(float(report["throughput_cost_per_record_us"]), 1.0)
 
     def test_build_report_rejects_missing_enabled_output(self) -> None:
         binary = Path("Benchmark")
@@ -357,6 +379,19 @@ class BenchmarkReportTests(unittest.TestCase):
                     scenario="hotpath-bench",
                     extra_env={},
                 )
+
+    def test_build_report_rejects_combinatorially_large_workload(self) -> None:
+        with self.assertRaisesRegex(
+            benchmark_demo.BenchmarkConfigurationError,
+            "timer records per run",
+        ):
+            benchmark_demo.build_report(
+                Path("Benchmark"),
+                iterations=100,
+                runs=1,
+                scenario="hotpath-bench",
+                extra_env={"SCOPE_TIMER_BENCH_THREADS": "32"},
+            )
 
     def test_validate_run_result_rejects_wrong_record_count(self) -> None:
         with self.assertRaisesRegex(benchmark_demo.BenchmarkInvariantError, "expected 10"):
@@ -602,6 +637,13 @@ class MatrixArgumentTests(unittest.TestCase):
         with self.assertRaises(benchmark_demo.BenchmarkConfigurationError):
             record_demo_benchmarks.normalize_args(args, root)
 
+    def test_matrix_arguments_reject_excessive_total_processes(self) -> None:
+        with self.assertRaisesRegex(
+            benchmark_demo.BenchmarkConfigurationError,
+            "total processes",
+        ):
+            record_demo_benchmarks.normalize_args(self.namespace(runs=32), Path("/repo"))
+
     def test_build_directory_defaults_to_binary_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             binary = Path(temp) / "custom-build" / "Benchmark"
@@ -620,6 +662,57 @@ class MatrixArgumentTests(unittest.TestCase):
             record_demo_benchmarks.display_path(str(binary)),
             "./build-review/benchmark-build/Benchmark",
         )
+
+
+class SpeedSummaryTests(unittest.TestCase):
+    def test_only_single_thread_profiles_are_ranked(self) -> None:
+        summary = record_demo_benchmarks.build_speed_summary(
+            [
+                {
+                    "name": "single",
+                    "label": "single",
+                    "env": {},
+                    "thread_count": 1,
+                    "throughput_cost_per_record_us": 2.0,
+                },
+                {
+                    "name": "threaded",
+                    "label": "threaded",
+                    "env": {"SCOPE_TIMER_BENCH_THREADS": "4"},
+                    "thread_count": 4,
+                    "throughput_cost_per_record_us": 0.1,
+                },
+            ]
+        )
+
+        self.assertEqual(summary["fastest_single_thread_profile"]["name"], "single")
+        lines = record_demo_benchmarks.render_speed_breakdown_lines(summary)
+        self.assertIn("Aggregate throughput cost", "\n".join(lines))
+
+    def test_loading_legacy_history_rebuilds_non_misleading_summary(self) -> None:
+        history = {
+            "schema_version": record_demo_benchmarks.SCHEMA_VERSION,
+            "history": [
+                {
+                    "speed_summary": {"fastest_profile": {"name": "threaded"}},
+                    "results": [
+                        {
+                            "name": "threaded",
+                            "env": {"SCOPE_TIMER_BENCH_THREADS": "4"},
+                            "approx_per_record_us": 0.1,
+                        }
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "history.json"
+            path.write_text(json.dumps(history), encoding="utf-8")
+            loaded = record_demo_benchmarks.load_history(path)
+
+        summary = loaded["history"][0]["speed_summary"]
+        self.assertNotIn("fastest_profile", summary)
+        self.assertIsNone(summary["fastest_single_thread_profile"])
 
 
 if __name__ == "__main__":
