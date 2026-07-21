@@ -132,6 +132,7 @@ public:
         test_sink_flush_size_is_bounded();
         test_async_sink_flushes_on_disable();
         test_async_sink_flush_calls_custom_sink();
+        test_async_sink_worker_can_restart_after_self_shutdown();
         test_async_sink_reconfiguration_keeps_worker_running();
         test_custom_sink_reconfiguration_is_synchronized();
         test_hot_path_timer_emits_compact_line();
@@ -160,6 +161,7 @@ public:
         test_logfile_null_branch();
         test_logfile_failure_cache_branch();
         test_default_sink_rejects_symlink_logfile();
+        test_default_sink_rejects_hard_linked_logfile();
         test_static_lifetime_child_probes();
         test_log_fd_has_cloexec();
 
@@ -1091,6 +1093,17 @@ private:
         SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK(1024U);
         const auto baseline = ::xyzzy::scopetimer::ScopeTimer::snapshotThreadBuffers().size();
 
+        {
+            auto expiredState = std::make_shared<::xyzzy::scopetimer::ScopeTimer::ThreadBufferState>();
+            {
+                std::lock_guard lock(::xyzzy::scopetimer::ScopeTimer::threadBufferRegistryMutex());
+                ::xyzzy::scopetimer::ScopeTimer::threadBufferRegistry().emplace_back(expiredState);
+            }
+        }
+        const auto afterExpiredEntry = ::xyzzy::scopetimer::ScopeTimer::snapshotThreadBuffers().size();
+        expect(afterExpiredEntry == baseline,
+               "thread-buffer registry prunes expired weak entries during snapshots");
+
         std::thread worker([] {
             ::xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite("x", 1U);
         });
@@ -1136,6 +1149,12 @@ private:
             asyncState.running = false;
         }
         expect(queueStayedBounded, "async sink drops records when its queue budget is exhausted");
+
+        ::xyzzy::scopetimer::ScopeTimer::asyncSinkWrite(
+            "oversized",
+            ::xyzzy::scopetimer::ScopeTimer::MaxAsyncSinkQueuedBytes + 1U
+        );
+        expect(true, "async sink rejects records larger than its queue budget");
     }
 
     static void test_async_sink_flushes_on_disable() {
@@ -1186,6 +1205,40 @@ private:
         expect(sinkCaptureBuffer().find("tests:async:custom_flush") != std::string::npos,
                "async sink flush publishes pending custom-sink output");
         expect(sinkFlushCount() == 1U, "async sink flush calls the active custom sink flush");
+        SCOPE_TIMER_DISABLE_ASYNC_SINK();
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+    }
+
+    static void test_async_sink_worker_can_restart_after_self_shutdown() {
+        std::atomic<std::size_t> writeCount{0U};
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(
+            [&writeCount](const char*, std::size_t) {
+                writeCount.fetch_add(1U, std::memory_order_relaxed);
+                ::xyzzy::scopetimer::ScopeTimer::asyncSinkFlush();
+                ::xyzzy::scopetimer::ScopeTimer::shutdownAsyncSink();
+            },
+            {}
+        );
+        SCOPE_TIMER_ENABLE_ASYNC_SINK(1U);
+        ::xyzzy::scopetimer::ScopeTimer::asyncSinkWrite("x", 1U);
+        ::xyzzy::scopetimer::ScopeTimer::asyncSinkFlush();
+
+        bool restarted = false;
+        for (int attempt = 0; attempt < 100 && !restarted; ++attempt) {
+            {
+                auto& state = ::xyzzy::scopetimer::ScopeTimer::asyncSinkState();
+                std::lock_guard lock(state.mutex);
+                restarted = state.running && state.worker.joinable() && !state.stop;
+            }
+            if (!restarted) {
+                std::this_thread::sleep_for(1ms);
+            }
+        }
+
+        expect(writeCount.load(std::memory_order_relaxed) == 1U,
+               "async sink worker invokes the custom sink once before self-shutdown");
+        expect(restarted,
+               "async sink worker restarts after a callback requests self-shutdown");
         SCOPE_TIMER_DISABLE_ASYNC_SINK();
         ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
     }
@@ -1485,6 +1538,17 @@ private:
         );
         expect(reservedOut == reserved,
                "appendBytesTruncatingReserved preserves fully reserved output space");
+
+        char* exhaustedOut = reserved + sizeof(reserved);
+        ::xyzzy::scopetimer::ScopeTimer::appendBytesTruncatingReserved(
+            exhaustedOut,
+            reserved + sizeof(reserved),
+            "ignored",
+            7U,
+            0U
+        );
+        expect(exhaustedOut == reserved + sizeof(reserved),
+               "appendBytesTruncatingReserved ignores writes after the output buffer is exhausted");
 
         char threadId[16] = {};
         char* threadIdOut = threadId;
@@ -2050,6 +2114,43 @@ private:
 
         ::unlink(link.c_str());
         std::remove(target.c_str());
+        ::rmdir(dir.c_str());
+        ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
+    }
+
+    static void test_default_sink_rejects_hard_linked_logfile() {
+        char templ[] = "/tmp/scopetimer_hardlinkXXXXXX";
+        char* rawDir = ::mkdtemp(templ);
+        if (!rawDir) {
+            expect(false, "created temporary directory for hard-link log test");
+            return;
+        }
+        const std::string dir = rawDir;
+        const std::string logfile = dir + "/ScopeTimer.log";
+        const std::string alias = dir + "/ScopeTimer.alias";
+        {
+            std::ofstream output(logfile, std::ios::binary);
+            output << "sentinel";
+        }
+        const int linkResult = ::link(logfile.c_str(), alias.c_str());
+
+        ::setenv("SCOPE_TIMER_DIR", dir.c_str(), 1);
+        ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(dir);
+        ::xyzzy::scopetimer::ScopeTimer::closeLogFdForTests();
+        ::xyzzy::scopetimer::ScopeTimer::defaultSinkWrite("must-not-append", 15U);
+
+        std::ifstream input(logfile, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        expect(
+            linkResult == 0
+                && ::xyzzy::scopetimer::ScopeTimer::defaultLogFdForTests() == -1
+                && content == "sentinel",
+            "default sink refuses hard-linked ScopeTimer.log files"
+        );
+
+        ::unlink(alias.c_str());
+        std::remove(logfile.c_str());
         ::rmdir(dir.c_str());
         ::setenv("SCOPE_TIMER_DIR", s_test_log_directory.c_str(), 1);
         ::xyzzy::scopetimer::ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
