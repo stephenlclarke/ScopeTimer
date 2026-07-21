@@ -13,7 +13,7 @@
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
 ![Repo Visitors](https://visitor-badge.laobi.icu/badge?page_id=stephenlclarke.ScopeTimer)
 
-A tiny, zero-intrusion C++17 **RAII scope timer** for high-performance code
+A tiny, zero-intrusion C++20 **RAII scope timer** for high-performance code
 paths. Drop a single macro into a scope and get a structured log line on exit
 with start, end, and elapsed time. In release builds it compiles to a no-op; in
 debug builds it's lock-light and allocation-free on the hot path.
@@ -27,7 +27,7 @@ on in the early 1990's while at Merril Lynch. It owed a lot to James O.
 Coplien's Advanced C++: Programming Styles and Idioms (Addison-Wesley, first
 ed. 1991). A very smart guy that I had the pleaseure to work with when I was
 at Bloomberg in 2016. This version is a re-imagining of the original.
-Rewritten from scratch for C++17/20.
+Rewritten from scratch for C++20 and later.
 
 ---
 
@@ -164,7 +164,7 @@ dependency.
 1. Copy `include/ScopeTimer.hpp` into your project, or vendor this repo under
    something like `third_party/ScopeTimer`.
 2. Add the header directory to your target's include path.
-3. Compile your target as C++17 or newer.
+3. Compile your target as C++20 or newer.
 4. Include `ScopeTimer.hpp` wherever you want to time a scope.
 5. Run your app with `SCOPE_TIMER=1` in debug builds if you want logging
    explicitly enabled.
@@ -186,7 +186,7 @@ add_executable(my_app
     src/main.cpp
 )
 
-target_compile_features(my_app PRIVATE cxx_std_17)
+target_compile_features(my_app PRIVATE cxx_std_20)
 target_include_directories(my_app PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/ScopeTimer/include
 )
@@ -207,7 +207,7 @@ int main() {
 ### Non-CMake example ###
 
 ```bash
-g++ -std=c++17 -pthread -I./third_party/ScopeTimer/include src/main.cpp -o my_app
+g++ -std=c++20 -pthread -I./third_party/ScopeTimer/include src/main.cpp -o my_app
 ```
 
 ### Important build behavior ###

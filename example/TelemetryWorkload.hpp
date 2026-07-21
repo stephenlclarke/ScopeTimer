@@ -1,5 +1,5 @@
 /*
- * ScopeTimer - lightweight C++17 scope timing utility
+ * ScopeTimer - lightweight C++20 scope timing utility
  * Copyright (C) 2025 Steve Clarke <stephenlclarke@mac.com> https://xyzzy.tools
  *
  * This program is free software: you can redistribute it and/or modify

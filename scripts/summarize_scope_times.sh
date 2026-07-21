@@ -22,7 +22,8 @@
 # code of your version.
 # -----------------------------------------------------------------------------
 #
-# Group by the prefix (everything before "| elapsed=") and show:
+# Group normal records (everything before "| elapsed=") and hot-path records
+# (everything before "] elapsed=") and show:
 #   1) Per-key two-line block:
 #        <key>
 #        <v1> <v2> <v3> ...   (all elapsed values in order seen)
@@ -71,39 +72,45 @@ function print_block(k, s, e,   i, col) {
 
 # Collect
 {
-  # Find split point at: optional spaces, literal pipe, optional spaces, then "elapsed="
+  # Normal records split at: optional spaces, literal pipe, optional spaces,
+  # then "elapsed=". Hot-path records omit the pipe and timestamps.
   if (match($0, /[[:space:]]*\|[[:space:]]*elapsed=/)) {
     key  = substr($0, 1, RSTART - 1)
     rest = substr($0, RSTART + RLENGTH)  # e.g. "8us", "5.194ms", "15.059s"
+  } else if (match($0, /\][[:space:]]+elapsed=/)) {
+    key  = substr($0, 1, RSTART - 1)
+    rest = substr($0, RSTART + RLENGTH)
+  } else {
+    next
+  }
 
-    # Determine unit (BSD awk-safe)
-    unit = ""
-    if (rest ~ /ns$/)      unit = "ns"
-    else if (rest ~ /us$/) unit = "us"
-    else if (rest ~ /ms$/) unit = "ms"
-    else if (rest ~ /s$/)  unit = "s"
+  # Determine unit (BSD awk-safe)
+  unit = ""
+  if (rest ~ /ns$/)      unit = "ns"
+  else if (rest ~ /us$/) unit = "us"
+  else if (rest ~ /ms$/) unit = "ms"
+  else if (rest ~ /s$/)  unit = "s"
 
-    if (unit != "") {
-      num = rest
-      sub(/(ns|us|ms|s)$/, "", num)   # strip unit
-      if (num ~ /^[0-9]+(\.[0-9]+)?$/) {
-        us = to_us(num, unit)
+  if (unit != "") {
+    num = rest
+    sub(/(ns|us|ms|s)$/, "", num)   # strip unit
+    if (num ~ /^[0-9]+(\.[0-9]+)?$/) {
+      us = to_us(num, unit)
 
-        if (!(key in kseen)) {
-          kseen[key] = 1
-          korder[++kcnt] = key     # remember first-seen order
-          c[key] = 0
-          sum[key] = 0
-          min[key] = us
-          max[key] = us
-        }
-
-        seq = ++c[key]
-        series[key, seq] = us
-        sum[key] += us
-        if (us < min[key]) min[key] = us
-        if (us > max[key]) max[key] = us
+      if (!(key in kseen)) {
+        kseen[key] = 1
+        korder[++kcnt] = key     # remember first-seen order
+        c[key] = 0
+        sum[key] = 0
+        min[key] = us
+        max[key] = us
       }
+
+      seq = ++c[key]
+      series[key, seq] = us
+      sum[key] += us
+      if (us < min[key]) min[key] = us
+      if (us > max[key]) max[key] = us
     }
   }
 }

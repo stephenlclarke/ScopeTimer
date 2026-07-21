@@ -23,15 +23,17 @@ from pathlib import Path
 
 
 MAX_ITERATIONS = 100
-MAX_RUNS = 1000
-MAX_BENCHMARK_THREADS = 256
+MAX_RUNS = 32
+MAX_BENCHMARK_THREADS = 32
 MAX_BENCHMARK_SINK_BYTES = 64 * 1024 * 1024
+MAX_EXPECTED_RECORDS_PER_RUN = 10_000_000
 HOTPATH_RECORDS_PER_ROUND = 256
 HOTPATH_ROUNDS_PER_ITERATION = 12
 INSTRUMENTATION_PROBE_ARGUMENT = "--instrumentation-status"
 INSTRUMENTATION_PROBE_ENABLED = "ScopeTimerBenchmark protocol=1 instrumentation=enabled"
 INSTRUMENTATION_PROBE_DISABLED = "ScopeTimerBenchmark protocol=1 instrumentation=disabled"
 INSTRUMENTATION_PROBE_TIMEOUT_SECONDS = 5.0
+BENCHMARK_RUN_TIMEOUT_SECONDS = 60.0
 RESERVED_ENV_KEYS = frozenset({"SCOPE_TIMER", "SCOPE_TIMER_DIR"})
 PROFILE_ENV_KEYS = frozenset(
     {
@@ -343,7 +345,13 @@ def run_once(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            timeout=BENCHMARK_RUN_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as error:
+        raise BenchmarkInvariantError(
+            f"benchmark run timed out after {BENCHMARK_RUN_TIMEOUT_SECONDS:.0f}s "
+            f"(enabled={enabled})"
+        ) from error
     except OSError as error:
         raise BenchmarkInvariantError(f"could not execute benchmark binary: {error}") from error
     elapsed = time.perf_counter() - start
@@ -377,6 +385,12 @@ def build_report(binary: Path, iterations: int, runs: int, scenario: str, extra_
         )
     extra_env = normalize_extra_env(extra_env)
     expected_records = expected_record_count(iterations, extra_env)
+    if expected_records > MAX_EXPECTED_RECORDS_PER_RUN:
+        raise BenchmarkConfigurationError(
+            "benchmark workload would model "
+            f"{expected_records} timer records per run; reduce iterations or threads "
+            f"(maximum {MAX_EXPECTED_RECORDS_PER_RUN})"
+        )
     emits_output = profile_emits_output(extra_env)
     instrumentation_probe = probe_benchmark_binary(binary)
 
@@ -423,7 +437,13 @@ def build_report(binary: Path, iterations: int, runs: int, scenario: str, extra_
 
     final_enabled = enabled_runs[-1]
     line_count = int(final_enabled["log_lines"])
-    per_record_us = (statistics.mean(deltas) / expected_records) * 1_000_000.0
+    throughput_cost_per_record_us = (statistics.mean(deltas) / expected_records) * 1_000_000.0
+    thread_count = int(extra_env.get("SCOPE_TIMER_BENCH_THREADS", "1"))
+    per_record_measurement = (
+        "single_thread_cost_estimate"
+        if thread_count == 1
+        else "aggregate_throughput_cost"
+    )
 
     return {
         "binary": str(binary),
@@ -452,7 +472,9 @@ def build_report(binary: Path, iterations: int, runs: int, scenario: str, extra_
         "per_record_denominator": expected_records,
         "profile_emits_output": emits_output,
         "disabled_log_exists": bool(disabled_runs[-1]["log_exists"]),
-        "approx_per_record_us": per_record_us,
+        "thread_count": thread_count,
+        "per_record_measurement": per_record_measurement,
+        "throughput_cost_per_record_us": throughput_cost_per_record_us,
     }
 
 
@@ -480,8 +502,15 @@ def print_text_report(report: dict[str, object]) -> None:
         f"{report['enabled_log_lines']} lines, {report['enabled_log_bytes']} bytes "
         f"({report['expected_enabled_records']} modeled records)"
     )
-    if report["approx_per_record_us"] is not None:
-        print(f"approx per record:    {report['approx_per_record_us']:.3f}us")
+    metric_label = (
+        "single-thread estimate"
+        if report["per_record_measurement"] == "single_thread_cost_estimate"
+        else "aggregate throughput cost"
+    )
+    print(
+        f"{metric_label}: "
+        f"{report['throughput_cost_per_record_us']:.3f}us/record"
+    )
     print(f"disabled emits log:   {'yes' if report['disabled_log_exists'] else 'no'}")
 
 

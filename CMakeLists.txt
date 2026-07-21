@@ -26,31 +26,41 @@ cmake_minimum_required(VERSION 3.16)
 project(ScopeTimer LANGUAGES CXX)
 
 # --- Basics ---------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-# Export compile DB (used by Sonar via build-wrapper)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(SCOPETIMER_IS_TOP_LEVEL OFF)
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  set(SCOPETIMER_IS_TOP_LEVEL ON)
+endif()
 
-include(CTest)
+if(SCOPETIMER_IS_TOP_LEVEL)
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
+  # Export compile DB (used by Sonar via build-wrapper)
+  set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+  include(CTest)
+endif()
+
 find_package(Threads REQUIRED)
+find_package(Python3 COMPONENTS Interpreter QUIET)
 
 # Header-only consumer target. Keep the namespaced alias available to vendored
 # CMake consumers without adding install/export packaging to this development
 # build.
 add_library(ScopeTimer INTERFACE)
 add_library(ScopeTimer::ScopeTimer ALIAS ScopeTimer)
-target_compile_features(ScopeTimer INTERFACE cxx_std_17)
+target_compile_features(ScopeTimer INTERFACE cxx_std_20)
 target_include_directories(ScopeTimer INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_link_libraries(ScopeTimer INTERFACE Threads::Threads)
 
+if(SCOPETIMER_IS_TOP_LEVEL)
+
 # --- Demo app -------------------------------------------------------------
 # Use example/Demo.cpp if present, else ./Demo.cpp.
-if(EXISTS "${CMAKE_SOURCE_DIR}/example/Demo.cpp")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/Demo.cpp")
   set(DEMO_SRC example/Demo.cpp)
-elseif(EXISTS "${CMAKE_SOURCE_DIR}/Demo.cpp")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Demo.cpp")
   set(DEMO_SRC Demo.cpp)
 else()
   message(FATAL_ERROR "No Demo.cpp found (looked in example/ and project root)")
@@ -61,9 +71,9 @@ target_link_libraries(Demo PRIVATE ScopeTimer::ScopeTimer)
 
 # --- Benchmark app --------------------------------------------------------
 # Keep the dedicated benchmark workload separate from the educational demo.
-if(EXISTS "${CMAKE_SOURCE_DIR}/example/Benchmark.cpp")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/Benchmark.cpp")
   set(BENCHMARK_SRC example/Benchmark.cpp)
-elseif(EXISTS "${CMAKE_SOURCE_DIR}/Benchmark.cpp")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Benchmark.cpp")
   set(BENCHMARK_SRC Benchmark.cpp)
 else()
   message(FATAL_ERROR "No Benchmark.cpp found (looked in example/ and project root)")
@@ -74,14 +84,14 @@ target_link_libraries(Benchmark PRIVATE ScopeTimer::ScopeTimer)
 
 # --- Unit tests (optional) -------------------------------------------------
 set(TEST_TARGETS)
-if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/test/ScopeTimerTest.cpp")
+if(BUILD_TESTING AND NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/ScopeTimerTest.cpp")
   add_executable(scopetimer_tests test/ScopeTimerTest.cpp)
   target_link_libraries(scopetimer_tests PRIVATE ScopeTimer::ScopeTimer)
-  target_compile_definitions(scopetimer_tests PRIVATE SCOPETIMER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  target_compile_definitions(scopetimer_tests PRIVATE SCOPETIMER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   list(APPEND TEST_TARGETS scopetimer_tests)
 endif()
 
-if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/test/ScopeTimerReleaseCompileTest.cpp")
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/ScopeTimerReleaseCompileTest.cpp")
   add_executable(scopetimer_release_compile_test test/ScopeTimerReleaseCompileTest.cpp)
   target_link_libraries(scopetimer_release_compile_test PRIVATE ScopeTimer::ScopeTimer)
   target_compile_definitions(scopetimer_release_compile_test PRIVATE NDEBUG)
@@ -105,29 +115,18 @@ endfunction()
 if(BUILD_TESTING AND TARGET Demo)
   add_test(NAME run_demo COMMAND Demo)
   add_test(NAME run_demo_iterations COMMAND Demo --iterations=1)
-  add_test(NAME run_demo_iterations_zero_flag COMMAND Demo --iterations=0)
   add_test(NAME run_demo_positional_iterations COMMAND Demo 2)
-  add_test(NAME run_demo_positional_zero COMMAND Demo 0)
   add_test(NAME run_demo_help COMMAND Demo --help)
   scopetimer_set_test_working_directory(
     run_demo
     run_demo_iterations
-    run_demo_iterations_zero_flag
     run_demo_positional_iterations
-    run_demo_positional_zero
     run_demo_help
-  )
-  set_tests_properties(
-    run_demo_iterations_zero_flag
-    run_demo_positional_zero
-    PROPERTIES WILL_FAIL TRUE
   )
 endif()
 
 if(BUILD_TESTING AND TARGET Benchmark)
   add_test(NAME run_benchmark_default COMMAND Benchmark --iterations=1 --scenario=hotpath-bench)
-  add_test(NAME run_benchmark_iterations_zero COMMAND Benchmark --iterations=0 --scenario=hotpath-bench)
-  add_test(NAME run_benchmark_positional_zero COMMAND Benchmark 0)
   add_test(NAME run_benchmark_help COMMAND Benchmark --help)
   if(NOT CMAKE_CONFIGURATION_TYPES AND
      NOT CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
@@ -142,45 +141,23 @@ if(BUILD_TESTING AND TARGET Benchmark)
         PASS_REGULAR_EXPRESSION "^ScopeTimerBenchmark protocol=1 instrumentation=enabled"
     )
   endif()
-  add_test(NAME run_benchmark_invalid_scenario COMMAND Benchmark --scenario=bogus)
   add_test(NAME run_benchmark_buffered_hotpath COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_buffered_fast_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_async COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_null COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_null_standard_alias COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_noop_alias COMMAND Benchmark --iterations=1)
-  add_test(NAME run_benchmark_async_invalid_env COMMAND Benchmark --iterations=1)
-  add_test(NAME run_benchmark_out_of_range_env COMMAND Benchmark --iterations=1)
-  add_test(NAME run_benchmark_invalid_sink_bytes COMMAND Benchmark --iterations=1)
-  add_test(NAME run_benchmark_out_of_range_sink_bytes COMMAND Benchmark --iterations=1)
   add_test(NAME run_benchmark_max_sink_bytes COMMAND Benchmark --iterations=1)
   scopetimer_set_test_working_directory(
     run_benchmark_default
-    run_benchmark_iterations_zero
-    run_benchmark_positional_zero
     run_benchmark_help
-    run_benchmark_invalid_scenario
     run_benchmark_buffered_hotpath
     run_benchmark_buffered_fast_alias
     run_benchmark_async
     run_benchmark_null
     run_benchmark_null_standard_alias
     run_benchmark_noop_alias
-    run_benchmark_async_invalid_env
-    run_benchmark_out_of_range_env
-    run_benchmark_invalid_sink_bytes
-    run_benchmark_out_of_range_sink_bytes
     run_benchmark_max_sink_bytes
-  )
-  set_tests_properties(
-    run_benchmark_iterations_zero
-    run_benchmark_positional_zero
-    run_benchmark_invalid_scenario
-    run_benchmark_async_invalid_env
-    run_benchmark_out_of_range_env
-    run_benchmark_invalid_sink_bytes
-    run_benchmark_out_of_range_sink_bytes
-    PROPERTIES WILL_FAIL TRUE
   )
   scopetimer_set_benchmark_test_env(
     run_benchmark_buffered_hotpath
@@ -199,10 +176,6 @@ if(BUILD_TESTING AND TARGET Benchmark)
     "SCOPE_TIMER_BENCH_SINK=NULL;SCOPE_TIMER_BENCH_TIMER=HOTPATH"
   )
   scopetimer_set_benchmark_test_env(
-    run_benchmark_async_invalid_env
-    "SCOPE_TIMER_BENCH_SINK=async;SCOPE_TIMER_BENCH_THREADS=bogus;SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
-  )
-  scopetimer_set_benchmark_test_env(
     run_benchmark_null_standard_alias
     "SCOPE_TIMER_BENCH_SINK=null"
   )
@@ -211,21 +184,62 @@ if(BUILD_TESTING AND TARGET Benchmark)
     "SCOPE_TIMER_BENCH_SINK=noop"
   )
   scopetimer_set_benchmark_test_env(
-    run_benchmark_out_of_range_env
-    "SCOPE_TIMER_BENCH_THREADS=9999999999999999999999999999;SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
-  )
-  scopetimer_set_benchmark_test_env(
-    run_benchmark_invalid_sink_bytes
-    "SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
-  )
-  scopetimer_set_benchmark_test_env(
-    run_benchmark_out_of_range_sink_bytes
-    "SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
-  )
-  scopetimer_set_benchmark_test_env(
     run_benchmark_max_sink_bytes
     "SCOPE_TIMER_BENCH_SINK=NULL;SCOPE_TIMER_BENCH_SINK_BYTES=67108864"
   )
+endif()
+
+# Check rejected CLI inputs for both a nonzero status and a useful diagnostic.
+# CTest's WILL_FAIL only observes the status, so it could pass a crash or an
+# unrelated failure as a valid argument-validation result.
+if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+  function(scopetimer_add_rejected_cli_test TEST_NAME TARGET_NAME EXPECTED_TEXT)
+    add_test(
+      NAME ${TEST_NAME}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/RejectedCliTest.py
+              --expected "${EXPECTED_TEXT}"
+              -- $<TARGET_FILE:${TARGET_NAME}> ${ARGN}
+    )
+    set_tests_properties(${TEST_NAME} PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+  endfunction()
+
+  if(TARGET Demo)
+    scopetimer_add_rejected_cli_test(
+      run_demo_iterations_zero_flag Demo "iterations must be between" --iterations=0)
+    scopetimer_add_rejected_cli_test(
+      run_demo_positional_zero Demo "iterations must be between" 0)
+  endif()
+  if(TARGET Benchmark)
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_iterations_zero Benchmark "iterations must be between" --iterations=0 --scenario=hotpath-bench)
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_positional_zero Benchmark "iterations must be between" 0)
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_invalid_scenario Benchmark "unknown benchmark scenario" --scenario=bogus)
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_async_invalid_env Benchmark "SCOPE_TIMER_BENCH_THREADS" --iterations=1)
+    set_tests_properties(
+      run_benchmark_async_invalid_env
+      PROPERTIES ENVIRONMENT "SCOPE_TIMER_BENCH_SINK=async;SCOPE_TIMER_BENCH_THREADS=bogus;SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
+    )
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_out_of_range_env Benchmark "SCOPE_TIMER_BENCH_THREADS" --iterations=1)
+    set_tests_properties(
+      run_benchmark_out_of_range_env
+      PROPERTIES ENVIRONMENT "SCOPE_TIMER_BENCH_THREADS=9999999999999999999999999999;SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
+    )
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_invalid_sink_bytes Benchmark "SCOPE_TIMER_BENCH_SINK_BYTES" --iterations=1)
+    set_tests_properties(
+      run_benchmark_invalid_sink_bytes PROPERTIES ENVIRONMENT "SCOPE_TIMER_BENCH_SINK_BYTES=bogus"
+    )
+    scopetimer_add_rejected_cli_test(
+      run_benchmark_out_of_range_sink_bytes Benchmark "SCOPE_TIMER_BENCH_SINK_BYTES" --iterations=1)
+    set_tests_properties(
+      run_benchmark_out_of_range_sink_bytes
+      PROPERTIES ENVIRONMENT "SCOPE_TIMER_BENCH_SINK_BYTES=9999999999999999999999999999"
+    )
+  endif()
 endif()
 
 if(TARGET scopetimer_tests)
@@ -343,8 +357,6 @@ set(SCOPETIMER_HEADER_COVERAGE_THRESHOLD "80" CACHE STRING
     "Minimum ScopeTimer.hpp line coverage percentage enforced by the header coverage target")
 set(DOCS_BUILD_DIR "${CMAKE_BINARY_DIR}/docs-refresh")
 option(AUTO_REFRESH_DOCS "Automatically refresh BUILD.md and TESTS.md during the default build" OFF)
-find_package(Python3 COMPONENTS Interpreter QUIET)
-
 if(Python3_Interpreter_FOUND)
   if(BUILD_TESTING)
     add_test(
@@ -372,6 +384,15 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(
       run_sonar_branch_guard_tests
       PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+      NAME run_cmake_consumer_test
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/CMakeConsumerTest.py ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    set_tests_properties(
+      run_cmake_consumer_test
+      PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
   endif()
 
@@ -788,3 +809,5 @@ else()
     VERBATIM
   )
 endif()
+
+endif() # SCOPETIMER_IS_TOP_LEVEL

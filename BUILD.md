@@ -90,10 +90,10 @@ created before its nested build directory is replaced.
 -- Configuring done (0.5s)
 -- Generating done (0.0s)
 -- Build files have been written to: ./build-review/docs-refresh
-[ 50%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
 [ 50%] Building CXX object CMakeFiles/scopetimer_tests.dir/test/ScopeTimerTest.cpp.o
 [ 50%] Building CXX object CMakeFiles/Demo.dir/example/Demo.cpp.o
 [ 50%] Building CXX object CMakeFiles/scopetimer_release_compile_test.dir/test/ScopeTimerReleaseCompileTest.cpp.o
+[ 50%] Building CXX object CMakeFiles/Benchmark.dir/example/Benchmark.cpp.o
 [ 62%] Linking CXX executable scopetimer_release_compile_test
 [ 62%] Built target scopetimer_release_compile_test
 [ 75%] Linking CXX executable Benchmark
@@ -104,65 +104,67 @@ created before its nested build directory is replaced.
 [100%] Built target scopetimer_tests
 Test project ./build-review/docs-refresh
       Start  1: run_demo
- 1/28 Test  #1: run_demo ................................   Passed    0.21 sec
+ 1/29 Test  #1: run_demo ................................   Passed    0.33 sec
       Start  2: run_demo_iterations
- 2/28 Test  #2: run_demo_iterations .....................   Passed    0.05 sec
-      Start  3: run_demo_iterations_zero_flag
- 3/28 Test  #3: run_demo_iterations_zero_flag ...........   Passed    0.00 sec
-      Start  4: run_demo_positional_iterations
- 4/28 Test  #4: run_demo_positional_iterations ..........   Passed    0.12 sec
-      Start  5: run_demo_positional_zero
- 5/28 Test  #5: run_demo_positional_zero ................   Passed    0.01 sec
-      Start  6: run_demo_help
- 6/28 Test  #6: run_demo_help ...........................   Passed    0.01 sec
-      Start  7: run_benchmark_default
- 7/28 Test  #7: run_benchmark_default ...................   Passed    0.14 sec
-      Start  8: run_benchmark_iterations_zero
- 8/28 Test  #8: run_benchmark_iterations_zero ...........   Passed    0.00 sec
-      Start  9: run_benchmark_positional_zero
- 9/28 Test  #9: run_benchmark_positional_zero ...........   Passed    0.00 sec
-      Start 10: run_benchmark_help
-10/28 Test #10: run_benchmark_help ......................   Passed    0.00 sec
-      Start 11: run_benchmark_instrumentation_status
-11/28 Test #11: run_benchmark_instrumentation_status ....   Passed    0.00 sec
-      Start 12: run_benchmark_invalid_scenario
-12/28 Test #12: run_benchmark_invalid_scenario ..........   Passed    0.00 sec
-      Start 13: run_benchmark_buffered_hotpath
-13/28 Test #13: run_benchmark_buffered_hotpath ..........   Passed    0.01 sec
-      Start 14: run_benchmark_buffered_fast_alias
-14/28 Test #14: run_benchmark_buffered_fast_alias .......   Passed    0.01 sec
-      Start 15: run_benchmark_async
-15/28 Test #15: run_benchmark_async .....................   Passed    0.01 sec
-      Start 16: run_benchmark_null
-16/28 Test #16: run_benchmark_null ......................   Passed    0.00 sec
-      Start 17: run_benchmark_null_standard_alias
-17/28 Test #17: run_benchmark_null_standard_alias .......   Passed    0.00 sec
-      Start 18: run_benchmark_noop_alias
-18/28 Test #18: run_benchmark_noop_alias ................   Passed    0.00 sec
-      Start 19: run_benchmark_async_invalid_env
-19/28 Test #19: run_benchmark_async_invalid_env .........   Passed    0.00 sec
-      Start 20: run_benchmark_out_of_range_env
-20/28 Test #20: run_benchmark_out_of_range_env ..........   Passed    0.00 sec
-      Start 21: run_benchmark_invalid_sink_bytes
-21/28 Test #21: run_benchmark_invalid_sink_bytes ........   Passed    0.00 sec
-      Start 22: run_benchmark_out_of_range_sink_bytes
-22/28 Test #22: run_benchmark_out_of_range_sink_bytes ...   Passed    0.00 sec
-      Start 23: run_benchmark_max_sink_bytes
-23/28 Test #23: run_benchmark_max_sink_bytes ............   Passed    0.00 sec
+ 2/29 Test  #2: run_demo_iterations .....................   Passed    0.04 sec
+      Start  3: run_demo_positional_iterations
+ 3/29 Test  #3: run_demo_positional_iterations ..........   Passed    0.10 sec
+      Start  4: run_demo_help
+ 4/29 Test  #4: run_demo_help ...........................   Passed    0.01 sec
+      Start  5: run_benchmark_default
+ 5/29 Test  #5: run_benchmark_default ...................   Passed    0.25 sec
+      Start  6: run_benchmark_help
+ 6/29 Test  #6: run_benchmark_help ......................   Passed    0.00 sec
+      Start  7: run_benchmark_instrumentation_status
+ 7/29 Test  #7: run_benchmark_instrumentation_status ....   Passed    0.00 sec
+      Start  8: run_benchmark_buffered_hotpath
+ 8/29 Test  #8: run_benchmark_buffered_hotpath ..........   Passed    0.01 sec
+      Start  9: run_benchmark_buffered_fast_alias
+ 9/29 Test  #9: run_benchmark_buffered_fast_alias .......   Passed    0.01 sec
+      Start 10: run_benchmark_async
+10/29 Test #10: run_benchmark_async .....................   Passed    0.01 sec
+      Start 11: run_benchmark_null
+11/29 Test #11: run_benchmark_null ......................   Passed    0.00 sec
+      Start 12: run_benchmark_null_standard_alias
+12/29 Test #12: run_benchmark_null_standard_alias .......   Passed    0.00 sec
+      Start 13: run_benchmark_noop_alias
+13/29 Test #13: run_benchmark_noop_alias ................   Passed    0.01 sec
+      Start 14: run_benchmark_max_sink_bytes
+14/29 Test #14: run_benchmark_max_sink_bytes ............   Passed    0.00 sec
+      Start 15: run_demo_iterations_zero_flag
+15/29 Test #15: run_demo_iterations_zero_flag ...........   Passed    0.03 sec
+      Start 16: run_demo_positional_zero
+16/29 Test #16: run_demo_positional_zero ................   Passed    0.03 sec
+      Start 17: run_benchmark_iterations_zero
+17/29 Test #17: run_benchmark_iterations_zero ...........   Passed    0.03 sec
+      Start 18: run_benchmark_positional_zero
+18/29 Test #18: run_benchmark_positional_zero ...........   Passed    0.03 sec
+      Start 19: run_benchmark_invalid_scenario
+19/29 Test #19: run_benchmark_invalid_scenario ..........   Passed    0.03 sec
+      Start 20: run_benchmark_async_invalid_env
+20/29 Test #20: run_benchmark_async_invalid_env .........   Passed    0.03 sec
+      Start 21: run_benchmark_out_of_range_env
+21/29 Test #21: run_benchmark_out_of_range_env ..........   Passed    0.03 sec
+      Start 22: run_benchmark_invalid_sink_bytes
+22/29 Test #22: run_benchmark_invalid_sink_bytes ........   Passed    0.03 sec
+      Start 23: run_benchmark_out_of_range_sink_bytes
+23/29 Test #23: run_benchmark_out_of_range_sink_bytes ...   Passed    0.03 sec
       Start 24: run_scopetimer_tests
-24/28 Test #24: run_scopetimer_tests ....................   Passed    0.72 sec
+24/29 Test #24: run_scopetimer_tests ....................   Passed    1.26 sec
       Start 25: run_scopetimer_release_compile_test
-25/28 Test #25: run_scopetimer_release_compile_test .....   Passed    0.09 sec
+25/29 Test #25: run_scopetimer_release_compile_test .....   Passed    0.21 sec
       Start 26: run_benchmark_tool_tests
-26/28 Test #26: run_benchmark_tool_tests ................   Passed    0.07 sec
+26/29 Test #26: run_benchmark_tool_tests ................   Passed    0.08 sec
       Start 27: run_refresh_docs_tests
-27/28 Test #27: run_refresh_docs_tests ..................   Passed    0.06 sec
+27/29 Test #27: run_refresh_docs_tests ..................   Passed    0.06 sec
       Start 28: run_sonar_branch_guard_tests
-28/28 Test #28: run_sonar_branch_guard_tests ............   Passed    0.82 sec
+28/29 Test #28: run_sonar_branch_guard_tests ............   Passed    0.67 sec
+      Start 29: run_cmake_consumer_test
+29/29 Test #29: run_cmake_consumer_test .................   Passed    0.93 sec
 
-100% tests passed out of 28
+100% tests passed out of 29
 
-Total Test time (real) =   2.38 sec
+Total Test time (real) =   4.28 sec
 ```
 
 <!-- markdownlint-enable MD013 -->
