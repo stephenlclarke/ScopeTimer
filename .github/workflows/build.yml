@@ -43,7 +43,7 @@ jobs:
           update-ca-certificates
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -74,7 +74,7 @@ jobs:
 
       - name: Install Sonar Build Wrapper
         if: steps.sonar.outputs.enabled == 'true'
-        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@22918119ff8e1ca75a623e15c8296b6ea4fbe28f
 
       # Equivalent to: rm -rf build && cmake -S . -B build
       - name: Configure (CMake • Debug • Ninja • GCC 15)
@@ -124,7 +124,7 @@ jobs:
       # Equivalent to: sonar-scanner
       - name: SonarQube Scan
         if: steps.sonar.outputs.enabled == 'true'
-        uses: SonarSource/sonarqube-scan-action@c7ee0f9df90b7aa20e8dcf9695dcfe2e7da5b4f2
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
