@@ -712,6 +712,8 @@ def display_path(path_value: str) -> str:
         return path_value
 
     path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = REPO_ROOT / path
     try:
         return f"./{path.resolve().relative_to(REPO_ROOT)}"
     except (OSError, ValueError):

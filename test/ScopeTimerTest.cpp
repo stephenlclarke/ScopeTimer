@@ -71,7 +71,7 @@ public:
     // Entry point that runs the whole suite and returns the number of failures.
     static int run_all(int argc, char** argv) {
         init_exe_path(argc, argv);
-        if (int rc = child_probe_main_if_requested(); rc == 0) return 0;
+        if (int rc = child_probe_main_if_requested(); rc >= 0) return rc;
         if (!initialize_test_log_directory()) {
             std::fprintf(stderr, "FAIL: unable to create isolated test log directory\n");
             return 1;
@@ -146,6 +146,7 @@ public:
         test_log_line_builders_handle_zero_buffers();
         test_sink_write_helpers_ignore_empty_payloads();
         test_conditional_timer_direct_true_branch();
+        test_default_sink_skips_custom_flush_bookkeeping();
         test_flush_active_sink_covers_all_sink_kinds();
         test_default_sink_write_batches_cover_error_and_chunking_paths();
         test_finalize_snprintf_result_branches();
@@ -157,6 +158,7 @@ public:
         test_disabled_case_insensitivity_child_process();
         test_bad_env_values_child_process();
         test_flushN_variants_child_process();
+        test_direct_sink_flush_counter_cadence_child_process();
         test_logdir_edge_cases_child_process();
         test_logfile_null_branch();
         test_logfile_failure_cache_branch();
@@ -1669,6 +1671,19 @@ private:
                "direct ConditionalScopeTimer true branch constructs a timer");
     }
 
+    static void test_default_sink_skips_custom_flush_bookkeeping() {
+        ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+        ::xyzzy::scopetimer::customSinkLineCounter() = 7U;
+        {
+            SCOPE_TIMER_HOT_PATH("tests:default:no_custom_flush_bookkeeping");
+        }
+        expect(
+            ::xyzzy::scopetimer::customSinkLineCounter() == 7U,
+            "default sink does not update custom sink flush bookkeeping"
+        );
+        ::xyzzy::scopetimer::customSinkLineCounter() = 0U;
+    }
+
     static void test_flush_active_sink_covers_all_sink_kinds() {
         sinkCaptureBuffer().clear();
         sinkFlushCount() = 0U;
@@ -1832,6 +1847,38 @@ private:
             SCOPE_TIMER_HOT_PATH("tests:hot_path:disabled");
             busyFor(100us);
             return 0;
+        }
+        if (mode == "direct_flush_counter") {
+            sinkCaptureBuffer().clear();
+            sinkFlushCount() = 0U;
+            ::xyzzy::scopetimer::customSinkLineCounter() = 0U;
+            ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+            for (int i = 0; i < 3; ++i) {
+                SCOPE_TIMER_HOT_PATH("tests:direct_flush_counter:before_reconfigure");
+            }
+            ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+            const bool reconfigurationResetCounter =
+                ::xyzzy::scopetimer::customSinkLineCounter() == 0U;
+            // Reconfiguration deliberately flushes the outgoing sink. Measure
+            // only periodic flushes issued by the newly configured sink.
+            sinkFlushCount() = 0U;
+            for (int i = 0; i < 10; ++i) {
+                SCOPE_TIMER_HOT_PATH("tests:direct_flush_counter");
+            }
+            const bool cadenceIsCorrect = reconfigurationResetCounter
+                && sinkFlushCount() == 2U
+                && ::xyzzy::scopetimer::customSinkLineCounter() == 0U;
+            if (!cadenceIsCorrect) {
+                std::fprintf(
+                    stderr,
+                    "direct_flush_counter: reset=%d flushes=%zu pending=%u\n",
+                    reconfigurationResetCounter ? 1 : 0,
+                    sinkFlushCount(),
+                    ::xyzzy::scopetimer::customSinkLineCounter()
+                );
+            }
+            ::xyzzy::scopetimer::ScopeTimer::setLogSinkForTests(nullptr, nullptr);
+            return cadenceIsCorrect ? 0 : 1;
         }
         return -1;
     }
@@ -2021,6 +2068,15 @@ private:
             int rc = run_child_with_env({{kv.first, kv.second},{"SCOPE_TIMER_FORMAT","MICROS"}});
             expect(rc == 0, "flush N variant executed in child process");
         }
+    }
+
+    static void test_direct_sink_flush_counter_cadence_child_process() {
+        const int rc = run_child_with_env({
+            {"SCOPETIMER_PROBE", "direct_flush_counter"},
+            {"SCOPE_TIMER_FLUSH_N", "5"},
+            {"SCOPE_TIMER_WALLTIME", "0"},
+        });
+        expect(rc == 0, "direct sink flush counter resets at the configured cadence");
     }
 
     static void test_logdir_edge_cases_child_process() {

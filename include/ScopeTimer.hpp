@@ -54,7 +54,7 @@
  *     directory is used. The selected directory must already exist and be writable.
  *
  * - SCOPE_TIMER_FLUSH_N:
- *     Specifies the number of log lines between active sink flush hook calls.
+ *     Specifies the number of log lines between direct custom sink flush hook calls.
  *     Must be a positive integer; defaults to 4096 if unset or invalid.
  *
  * - SCOPE_TIMER_FORMAT:
@@ -185,7 +185,7 @@ namespace xyzzy::scopetimer {
         }
 
         struct OutMutexTag {};
-        struct LineCounterTag {};
+        struct CustomSinkLineCounterTag {};
         struct ThreadBufferFlushBytesTag {};
         struct ThreadBufferRegistryMutexTag {};
         struct ThreadBufferRegistryTag {};
@@ -212,8 +212,10 @@ namespace xyzzy::scopetimer {
         return detail::singletonStorage<detail::LocaltimeMutexTag, std::mutex>();
     }
 
-    inline std::atomic<unsigned>& lineCounter() noexcept {
-        return detail::singletonStorage<detail::LineCounterTag, std::atomic<unsigned>>(0U);
+    inline unsigned& customSinkLineCounter() noexcept {
+        // Custom-sink callers hold outMutex(), so an atomic read-modify-write
+        // would add overhead without providing any additional synchronization.
+        return detail::singletonStorage<detail::CustomSinkLineCounterTag, unsigned>(0U);
     }
 
     // Small helper extracted to make branch coverage testable in unit tests
@@ -551,13 +553,18 @@ namespace xyzzy::scopetimer {
                 std::lock_guard lock(outMutex());
                 if (len) {
                     writeToActiveSink(activeSink, lineBuf.data, len);
-                }
 
-                // Serialize custom sink flush hooks with writes and sink
-                // reconfiguration. The default sink's flush hook is a no-op.
-                const unsigned cnt = lineCounter().fetch_add(1, std::memory_order_relaxed) + 1U;
-                if (cnt % flushInterval() == 0) { // configurable via SCOPE_TIMER_FLUSH_N
-                    flushActiveSink(activeSink);
+                    // Serialize custom sink flush hooks with writes and sink
+                    // reconfiguration. The default file sink is unbuffered and its
+                    // flush hook is a no-op, so it needs no periodic bookkeeping.
+                    if (activeSink == ActiveSink::Custom) {
+                        auto& linesSinceFlush = customSinkLineCounter();
+                        ++linesSinceFlush;
+                        if (linesSinceFlush == flushInterval()) { // configurable via SCOPE_TIMER_FLUSH_N
+                            linesSinceFlush = 0U;
+                            flushActiveSink(activeSink);
+                        }
+                    }
                 }
             } else if (len) {
                 // Thread-buffered sink flushes on size; avoid periodic counters and
@@ -722,7 +729,7 @@ namespace xyzzy::scopetimer {
         }
 
         /**
-         * @brief Returns the periodic flush interval for the ScopeTimer log.
+         * @brief Returns the periodic direct custom sink flush interval.
          *
          * Controlled by the environment variable `SCOPE_TIMER_FLUSH_N`.
          * If unset, non-numeric, or <= 0, defaults to 4096. Parsed once and cached.
@@ -1989,6 +1996,11 @@ namespace xyzzy::scopetimer {
         }
 
         static inline void updateCustomSinkRouting(bool asyncModeActive) {
+            // A newly configured direct sink starts a fresh flush cadence.
+            // This function is called with outMutex() held, which also protects
+            // the counter on the steady-state write path.
+            customSinkLineCounter() = 0U;
+
             if (hasCustomSink()) {
                 if (activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::Default) {
                     activeSinkStorage().store(ActiveSink::Custom, std::memory_order_release);

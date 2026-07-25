@@ -663,6 +663,12 @@ class MatrixArgumentTests(unittest.TestCase):
             "./build-review/benchmark-build/Benchmark",
         )
 
+    def test_repo_relative_history_paths_remain_stable(self) -> None:
+        self.assertEqual(
+            record_demo_benchmarks.display_path("./build-review/benchmark-build/Benchmark"),
+            "./build-review/benchmark-build/Benchmark",
+        )
+
 
 class SpeedSummaryTests(unittest.TestCase):
     def test_only_single_thread_profiles_are_ranked(self) -> None:

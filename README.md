@@ -132,10 +132,10 @@ the macro arguments are expanded **before** token pasting.
   then the current directory. Logging is best-effort: ScopeTimer does not create
   missing parent directories and silently drops a record if the file cannot be
   opened.
-- `SCOPE_TIMER_FLUSH_N` - Invoke the direct default/custom sink flush hook every
-  N lines (default 4096, max 1,000,000). Thread-buffered and async modes flush
-  based on their byte threshold and teardown instead. The default file sink uses
-  unbuffered appends, so this does not force disk durability.
+- `SCOPE_TIMER_FLUSH_N` - Invoke the direct custom sink flush hook every N lines
+  (default 4096, max 1,000,000). Thread-buffered and async modes flush based on
+  their byte threshold and teardown instead. The default file sink uses
+  unbuffered appends and needs no periodic flush bookkeeping.
 - `SCOPE_TIMER_FORMAT` - Elapsed units: `SECONDS`, `MILLIS`, `MICROS`, or
   `NANOS` (case-insensitive). If unset/invalid, auto-selects a readable unit.
 - `SCOPE_TIMER_WALLTIME` - Set to `"OFF"`, `"FALSE"`, `"NO"`, or `"0"` to omit
