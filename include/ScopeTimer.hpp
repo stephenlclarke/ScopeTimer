@@ -558,12 +558,7 @@ namespace xyzzy::scopetimer {
                     // reconfiguration. The default file sink is unbuffered and its
                     // flush hook is a no-op, so it needs no periodic bookkeeping.
                     if (activeSink == ActiveSink::Custom) {
-                        auto& linesSinceFlush = customSinkLineCounter();
-                        ++linesSinceFlush;
-                        if (linesSinceFlush == flushInterval()) { // configurable via SCOPE_TIMER_FLUSH_N
-                            linesSinceFlush = 0U;
-                            flushActiveSink(activeSink);
-                        }
+                        recordDirectCustomSinkLine();
                     }
                 }
             } else if (len) {
@@ -1671,6 +1666,15 @@ namespace xyzzy::scopetimer {
                 case ActiveSink::Default:
                     defaultSinkFlush();
                     break;
+            }
+        }
+        static inline void recordDirectCustomSinkLine() noexcept {
+            // Direct custom-sink writes call this with outMutex() held.
+            auto& linesSinceFlush = customSinkLineCounter();
+            ++linesSinceFlush;
+            if (linesSinceFlush == flushInterval()) { // configurable via SCOPE_TIMER_FLUSH_N
+                linesSinceFlush = 0U;
+                flushCustomSink();
             }
         }
         static inline void writeToBufferedSinkTarget(
