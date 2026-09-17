@@ -96,6 +96,7 @@
 #include <atomic>
 #include <algorithm>  // for std::transform
 #include <array>
+#include <cerrno>
 #include <cctype>     // for std::toupper
 #include <chrono>
 #include <charconv>
@@ -243,6 +244,13 @@ namespace xyzzy::scopetimer {
     } // namespace ScopeTimerDetail
 
     namespace detail {
+        // Arrays are C strings unless the caller supplies an explicit string_view.
+        template <std::size_t N>
+        inline std::string_view labelArrayView(const char (&text)[N]) noexcept {
+            const auto end = std::find(text, text + N, '\0');
+            return {text, static_cast<std::size_t>(end - text)};
+        }
+
         enum class LabelStorageKind : std::uint8_t {
             Borrowed,
             Copy,
@@ -296,7 +304,7 @@ namespace xyzzy::scopetimer {
 
             template <std::size_t N>
             explicit LabelArg(const char (&label)[N]) noexcept
-                : view_(label, N ? N - 1 : 0) {
+                : view_(labelArrayView(label)) {
                 // A char array can be an automatic object as well as a string
                 // literal. Keep a timer-local copy so delayed destruction never
                 // observes an expired or subsequently modified array.
@@ -344,7 +352,7 @@ namespace xyzzy::scopetimer {
         template <std::size_t N>
         inline LabelData makeLabelData(const char (&label)[N]) noexcept {
             return LabelData(
-                std::string_view{label, N ? N - 1 : 0},
+                detail::labelArrayView(label),
                 {},
                 LabelStorageKind::Copy
             );
@@ -373,19 +381,11 @@ namespace xyzzy::scopetimer {
         }
     } // namespace detail
 
-    /**
-     * @brief A high-resolution scope timer for measuring execution time of code blocks.
-     *
-     * This class uses C++20 features such as std::string_view for lightweight string parameters,
-     * thread_local storage and std::atomic for lock-free thread ID assignment,
-     * and fixed-size stack buffers for efficient formatting without heap allocation.
-     * It logs timing information to a configurable sink with buffered options for
-     * high throughput.
-     */
-    class ScopeTimer {
+    namespace detail {
+    // Owns sink configuration, delivery, buffers and process/thread teardown.
+    // Reconfiguration and cross-thread draining require quiescent producers.
+    class SinkRuntime {
     public:
-        struct HotPathTag {};
-
         static inline constexpr std::size_t DefaultSinkFlushBytes = 16U * 1024U;
         static inline constexpr std::size_t MaxSinkFlushBytes = 64U * 1024U * 1024U;
 
@@ -405,171 +405,22 @@ namespace xyzzy::scopetimer {
             }
         };
 
-        /**
-         * @brief Constructs a ScopeTimer instance and records the start time.
-         *
-         * @param where A std::string_view describing the scope or function being timed.
-         * @param labelData A helper struct conveying the label string and any owned storage.
-         */
-        inline explicit ScopeTimer(std::string_view where, detail::LabelData labelData = detail::LabelData{}) noexcept {
-            if(isDisabled()) {
-                disabled_ = true;
+        // Call after profiled workers have quiesced, just like sink reconfiguration.
+        static inline void flush() noexcept {
+            if (customSinkCallbackActive_ || processCleanupStartedStorage().load(std::memory_order_acquire)) {
                 return;
             }
-
-            if (!assignWhere(where)) {
-                disabled_ = true;
-                return;
-            }
-            startStandardTimer(std::move(labelData));
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
         }
 
-        /**
-         * @brief Internal fast path for compiler-provided function names with static storage.
-         */
-        inline explicit ScopeTimer(
-            detail::BorrowedWhere where,
-            detail::LabelData labelData = detail::LabelData{}
-        ) noexcept {
-            if (isDisabled()) {
-                disabled_ = true;
-                return;
-            }
-
-            where_ = where.view;
-            startStandardTimer(std::move(labelData));
-        }
-
-        /**
-         * @brief Convenience overload that accepts a plain string_view label.
-         */
-        inline explicit ScopeTimer(std::string_view where, std::string_view label) noexcept
-            : ScopeTimer(where, detail::LabelData{label}) {}
-
-        template <std::size_t N>
-        inline explicit ScopeTimer(std::string_view where, const char (&label)[N]) noexcept
-            : ScopeTimer(where, detail::LabelData{
-                std::string_view{label, N ? N - 1 : 0},
-                {},
-                detail::LabelStorageKind::Copy
-            }) {}
-
-        inline explicit ScopeTimer(HotPathTag, detail::LabelData labelData = detail::LabelData{}) noexcept {
-            if (isDisabled()) {
-                disabled_ = true;
-                return;
-            }
-
-            hotPathMode_ = true;
-            if (!assignLabel(std::move(labelData))) {
-                disabled_ = true;
-                return;
-            }
-            startSteady_ = std::chrono::steady_clock::now();
-        }
-
-        inline explicit ScopeTimer(HotPathTag, std::string_view label) noexcept
-            : ScopeTimer(HotPathTag{}, detail::LabelData{label}) {}
-
-        template <std::size_t N>
-        inline explicit ScopeTimer(HotPathTag, const char (&label)[N]) noexcept
-            : ScopeTimer(HotPathTag{}, detail::LabelData{
-                std::string_view{label, N ? N - 1 : 0},
-                {},
-                detail::LabelStorageKind::Copy
-            }) {}
-
-        ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
-        ScopeTimer& operator=(const ScopeTimer&) = delete; ///< Deleted copy assignment operator.
-        ScopeTimer(ScopeTimer&&) = delete; ///< Timers must remain bound to their original scope.
-        ScopeTimer& operator=(ScopeTimer&&) = delete; ///< Timers must remain bound to their original scope.
-
-        /**
-         * @brief Destructor that records the end time, computes elapsed duration,
-         * formats timing information, and writes a log entry.
-         *
-         * Logs include thread ID, scope name, start and end timestamps, and elapsed time.
-         */
-        inline ~ScopeTimer() noexcept {
-            // An atexit cleanup registered after a static timer was constructed
-            // runs before that timer's destructor.  At that point custom sinks,
-            // the async worker and the log descriptor have deliberately been
-            // dismantled, so static destruction must be a no-op.
-            if (disabled_ || processCleanupStartedStorage().load(std::memory_order_acquire)) {
-                return;
-            }
-            // A custom sink can instrument its own work. Its nested timer is
-            // deliberately dropped before trying to lock the direct sink,
-            // preventing both self-deadlock and recursive callback loops.
-            if (customSinkCallbackActive_) {
-                return;
-            }
-
-            const auto endSteady = std::chrono::steady_clock::now();
-            const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endSteady - startSteady_).count();
-
-            auto& fmtBufs = formatBuffers();
-            std::size_t len = 0;
-
-            // Final line buffer reused per thread to avoid repeated stack allocation.
-            auto& lineBuf = lineBuffer();
-            if (hotPathMode_) {
-                fmtBufs.elapsedLen = static_cast<std::uint8_t>(formatElapsedNanos(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf)));
-                len = buildHotPathLogLine(
-                    lineBuf.data,
-                    sizeof(lineBuf.data),
-                    label_,
-                    fmtBufs.elapsedBuf,
-                    fmtBufs.elapsedLen
-                );
-            } else {
-                const bool wallTimeEnabled = includeWallTime();
-                if (wallTimeEnabled) {
-                    const auto endWall = std::chrono::system_clock::now();
-                    fmtBufs.endLen = static_cast<std::uint8_t>(formatTime(endWall, fmtBufs.endBuf, sizeof(fmtBufs.endBuf)));
-                } else {
-                    fmtBufs.endLen = 0;
-                }
-                fmtBufs.elapsedLen = static_cast<std::uint8_t>(formatElapsed(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf)));
-
-                len = buildLogLine(lineBuf.data, sizeof(lineBuf.data), LogLineFields{
-                    label_,
-                    threadNum_,
-                    where_,
-                    std::string_view{startWallFormatted_, startWallFormattedLen_},
-                    std::string_view{fmtBufs.endBuf, fmtBufs.endLen},
-                    std::string_view{fmtBufs.elapsedBuf, fmtBufs.elapsedLen},
-                    wallTimeEnabled
-                });
-            }
-
-            // These sink-state atomics are intentionally acquire/release or relaxed
-            // instead of seq_cst. They publish configuration chosen under
-            // sinkConfigMutex(), and stronger global ordering would add fences on the
-            // steady-state timer path without improving correctness. Sonar's blanket
-            // seq_cst rule is suppressed for this header in sonar-project.properties.
-            const auto activeSink = activeSinkStorage().load(std::memory_order_acquire);
-            if (activeSink != ActiveSink::ThreadBuffered) {
-                std::lock_guard lock(outMutex());
-                if (len) {
-                    writeToActiveSink(activeSink, lineBuf.data, len);
-
-                    // Serialize custom sink flush hooks with writes and sink
-                    // reconfiguration. The default file sink is unbuffered and its
-                    // flush hook is a no-op, so it needs no periodic bookkeeping.
-                    if (activeSink == ActiveSink::Custom) {
-                        recordDirectCustomSinkLine();
-                    }
-                }
-            } else if (len) {
-                // Thread-buffered sink flushes on size; avoid periodic counters and
-                // interval checks to keep the buffered hot path cheap.
-                writeToActiveSink(activeSink, lineBuf.data, len);
-            }
+        static inline std::uint64_t droppedRecords() noexcept {
+            return droppedRecords_.load(std::memory_order_relaxed);
         }
 
         static inline void enableThreadBufferedSink(std::size_t flushBytes = DefaultSinkFlushBytes) noexcept {
-            if (customSinkCallbackActive_) {
+            if (!canEmit()) {
                 return;
             }
             flushBytes = normalizeSinkFlushBytes(flushBytes);
@@ -590,7 +441,7 @@ namespace xyzzy::scopetimer {
         }
 
         static inline void disableThreadBufferedSink() noexcept {
-            if (customSinkCallbackActive_) {
+            if (!canEmit()) {
                 return;
             }
             std::lock_guard sinkStateLock(sinkConfigMutex());
@@ -605,10 +456,10 @@ namespace xyzzy::scopetimer {
         }
 
         static inline void enableAsyncSink(std::size_t flushBytes = DefaultSinkFlushBytes) noexcept {
-            if (customSinkCallbackActive_) {
+            if (!canEmit()) {
                 return;
             }
-            flushBytes = normalizeSinkFlushBytes(flushBytes);
+            flushBytes = std::min(normalizeSinkFlushBytes(flushBytes), MaxAsyncSinkQueuedBytes);
             std::lock_guard sinkStateLock(sinkConfigMutex());
             registerProcessCleanup();
             flushAllThreadBuffers();
@@ -639,88 +490,37 @@ namespace xyzzy::scopetimer {
             setCustomLogSink(nullptr);
         }
 
-    private:
-        friend class xyzzy::scopetimer::ScopeTimer_TestFriend; // Allow unit tests to access private members
-        
-        /**
-         * @brief Checks if the ScopeTimer is disabled based on the SCOPE_TIMER environment variable.
-         *
-         * Reads the environment variable once and caches the result for subsequent calls.
-         * Returns true if the value is "OFF", "FALSE", "NO", or "0" (case-insensitive).
-         *
-         * @return true if disabled, false otherwise.
-         */
-        static inline bool isDisabled() noexcept {
-            static const bool disabled = []() {
-                const char* env = std::getenv("SCOPE_TIMER");
+    protected:
+        friend class ::xyzzy::scopetimer::ScopeTimer_TestFriend;
+        static inline bool canEmit() noexcept {
+            return !processCleanupStartedStorage().load(std::memory_order_acquire)
+                && !customSinkCallbackActive_;
+        }
 
-                if(!env) {
-                    return false;
+        static inline void emitLine(const char* data, std::size_t len) noexcept {
+            // These sink-state atomics are intentionally acquire/release or relaxed
+            // instead of seq_cst. They publish configuration chosen under
+            // sinkConfigMutex(), and stronger global ordering would add fences on the
+            // steady-state timer path without improving correctness. Sonar's blanket
+            // seq_cst rule is suppressed for this header in sonar-project.properties.
+            const auto activeSink = activeSinkStorage().load(std::memory_order_acquire);
+            if (activeSink != ActiveSink::ThreadBuffered) {
+                std::lock_guard lock(outMutex());
+                if (len) {
+                    writeToActiveSink(activeSink, data, len);
+
+                    // Serialize custom sink flush hooks with writes and sink
+                    // reconfiguration. The default file sink is unbuffered and its
+                    // flush hook is a no-op, so it needs no periodic bookkeeping.
+                    if (activeSink == ActiveSink::Custom) {
+                        recordDirectCustomSinkLine();
+                    }
                 }
-
-                const std::string val = normalizeBooleanSetting(env);
-
-                return val == "OFF" || val == "FALSE" || val == "NO" || val == "0";
-            }();
-
-            return disabled;
-        }
-
-        static inline std::string normalizeBooleanSetting(const char* env) {
-            std::string value(env ? env : "");
-            const auto isSpace = [](char c) {
-                return std::isspace(static_cast<unsigned char>(c)) != 0;
-            };
-            const auto first = std::find_if_not(value.begin(), value.end(), isSpace);
-            const auto last = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();
-            if (first >= last) {
-                return {};
+            } else if (len) {
+                // Thread-buffered sink flushes on size; avoid periodic counters and
+                // interval checks to keep the buffered hot path cheap.
+                writeToActiveSink(activeSink, data, len);
             }
-
-            std::string normalized(first, last);
-            std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            return normalized;
-        }
-
-        static inline bool isTruthySetting(const char* envName, bool defaultValue) noexcept {
-            if (const char* env = std::getenv(envName); env && *env) {
-                const std::string value = normalizeBooleanSetting(env);
-                if (value.empty()) {
-                    return defaultValue;
-                }
-                if (value == "OFF" || value == "FALSE" || value == "NO" || value == "0") {
-                    return false;
-                }
-                return true;
-            }
-            return defaultValue;
-        }
-
-        static inline bool includeWallTime() noexcept {
-            static const bool enabled = isTruthySetting("SCOPE_TIMER_WALLTIME", true);
-            return enabled;
-        }
-
-        /**
-         * @brief Retrieves a unique thread ID number in a lock-free manner.
-         *
-         * Uses thread_local storage to cache the thread ID, and an atomic counter
-         * to assign unique IDs starting from 1.
-         *
-         * @return uint32_t The unique thread ID number.
-         */
-        static inline uint32_t getThreadIdNumber() noexcept {
-            thread_local uint32_t tid = 0;
-
-            if(tid == 0) {
-                static std::atomic<uint32_t> next{ 1 };
-                // Only uniqueness matters here; callers do not depend on any cross-thread
-                // ordering relationship with the assigned numeric IDs.
-                tid = next.fetch_add(1, std::memory_order_relaxed);
-            }
-
-            return tid;
         }
 
         /**
@@ -808,6 +608,1018 @@ namespace xyzzy::scopetimer {
             state.initialized = true;
         }
 
+        /**
+         * @brief Per-thread assembly buffer for the full log line.
+         */
+        static void defaultSinkWrite(const char* data, std::size_t len) noexcept;
+        static void defaultSinkFlush() noexcept;
+        static void noopSinkFlush() noexcept;
+        static void threadBufferedSinkWrite(const char* data, std::size_t len) noexcept;
+        static void threadBufferedSinkFlush() noexcept;
+        static void asyncSinkWrite(const char* data, std::size_t len) noexcept;
+        static void asyncSinkFlush() noexcept;
+
+        enum class ActiveSink {
+            Default,
+            ThreadBuffered,
+            Custom,
+        };
+
+        enum class BufferedSinkTargetMode {
+            Default,
+            Async,
+            Custom,
+            TestCustom,
+        };
+
+        enum class BufferedSinkFlushMode {
+            Deferred,
+            Forced,
+        };
+
+        enum class AsyncSinkTargetMode {
+            Default,
+            Custom,
+        };
+
+        struct AsyncSinkBatch {
+            std::vector<char> data;
+            std::size_t size{0U};
+        };
+
+        struct ThreadBufferState {
+            std::mutex flushMutex;
+            std::vector<char> data;
+            std::size_t size{0U};
+            std::size_t capacity{0U};
+        };
+
+        struct ThreadBufferHandle {
+            std::shared_ptr<ThreadBufferState> state;
+
+            ThreadBufferHandle() noexcept {
+                try {
+                    state = std::make_shared<ThreadBufferState>();
+                    registerThreadBuffer(state);
+                } catch (...) {
+                    // Profiling must not terminate the host when thread-local
+                    // diagnostic storage cannot be allocated.
+                    state.reset();
+                }
+            }
+
+            ~ThreadBufferHandle() {
+                threadBufferTeardown_ = true;
+                if (state) {
+                    if (!SinkRuntime::processCleanupStartedStorage().load(std::memory_order_acquire)) {
+                        SinkRuntime::flushThreadBuffer(*state);
+                    }
+                    SinkRuntime::unregisterThreadBuffer(state);
+                }
+            }
+
+            ThreadBufferHandle(const ThreadBufferHandle&) = delete;
+            ThreadBufferHandle& operator=(const ThreadBufferHandle&) = delete;
+            ThreadBufferHandle(ThreadBufferHandle&&) = delete;
+            ThreadBufferHandle& operator=(ThreadBufferHandle&&) = delete;
+        };
+
+        // Trivially destructible state remains readable after the handle is gone.
+        static inline thread_local bool threadBufferTeardown_{false};
+        static inline ThreadBufferState* threadLocalBuffer() noexcept {
+            if (threadBufferTeardown_) {
+                return nullptr;
+            }
+            thread_local ThreadBufferHandle handle;
+            return handle.state.get();
+        }
+        static inline std::size_t normalizeSinkFlushBytes(std::size_t flushBytes) noexcept {
+            if (flushBytes == 0U) {
+                return DefaultSinkFlushBytes;
+            }
+            return std::min(flushBytes, MaxSinkFlushBytes);
+        }
+        static inline std::atomic<std::size_t>& threadBufferFlushBytesStorage() noexcept {
+            return detail::singletonStorage<detail::ThreadBufferFlushBytesTag, std::atomic<std::size_t>>(DefaultSinkFlushBytes);
+        }
+        static inline std::size_t threadBufferFlushBytes() noexcept {
+            // The threshold is configuration state written under sinkConfigMutex(); a
+            // relaxed load is sufficient and avoids an unnecessary fence per append.
+            return threadBufferFlushBytesStorage().load(std::memory_order_relaxed);
+        }
+        static inline std::mutex& threadBufferRegistryMutex() noexcept {
+            return detail::singletonStorage<detail::ThreadBufferRegistryMutexTag, std::mutex>();
+        }
+        static inline std::vector<std::weak_ptr<ThreadBufferState>>& threadBufferRegistry() noexcept {
+            return detail::singletonStorage<detail::ThreadBufferRegistryTag, std::vector<std::weak_ptr<ThreadBufferState>>>();
+        }
+        static inline void registerThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
+            try {
+                std::lock_guard lock(threadBufferRegistryMutex());
+                threadBufferRegistry().emplace_back(state);
+            } catch (...) {
+                // The owning thread still flushes its local buffer at thread
+                // exit; only cross-thread best-effort draining is unavailable.
+            }
+        }
+        static inline void unregisterThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
+            try {
+                std::lock_guard lock(threadBufferRegistryMutex());
+                auto& registry = threadBufferRegistry();
+                registry.erase(
+                    std::remove_if(registry.begin(), registry.end(), [&state](const auto& weakState) {
+                        return weakState.expired()
+                            || (!weakState.owner_before(state) && !state.owner_before(weakState));
+                    }),
+                    registry.end()
+                );
+            } catch (...) {
+                // Registry maintenance is best-effort; the shared state still
+                // releases normally even if its weak entry cannot be removed.
+            }
+        }
+        static inline std::vector<std::shared_ptr<ThreadBufferState>> snapshotThreadBuffers() noexcept {
+            try {
+                std::vector<std::shared_ptr<ThreadBufferState>> states;
+                std::lock_guard lock(threadBufferRegistryMutex());
+                auto& registry = threadBufferRegistry();
+                registry.erase(
+                    std::remove_if(registry.begin(), registry.end(), [&states](const auto& weakState) {
+                        if (auto state = weakState.lock()) {
+                            states.push_back(state);
+                            return false;
+                        }
+                        return true;
+                    }),
+                    registry.end()
+                );
+                return states;
+            } catch (...) {
+                return {};
+            }
+        }
+        static inline bool ensureThreadBufferCapacity(ThreadBufferState& state, std::size_t flushBytes) noexcept {
+            if (state.capacity >= flushBytes) {
+                return true;
+            }
+
+            std::lock_guard lock(state.flushMutex);
+            if (state.capacity >= flushBytes) {
+                return true;
+            }
+
+            try {
+                if (state.capacity == 0U && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async) {
+                    auto replacement = acquireAsyncSinkBatch(flushBytes);
+                    if (!replacement) return false;
+                    state.data = std::move(replacement->data);
+                } else {
+                    state.data.resize(flushBytes);
+                }
+                state.capacity = state.data.size();
+                return true;
+            } catch (...) {
+                return false;
+            }
+        }
+        static inline bool bufferedSinkTargetNeedsLock(BufferedSinkTargetMode mode) noexcept {
+            return mode != BufferedSinkTargetMode::Async;
+        }
+        static inline std::size_t drainThreadBuffer(ThreadBufferState& state, const char*& data) noexcept {
+            // Buffered sink mode changes are documented as setup/teardown steps.
+            // Callers are expected to quiesce profiled worker threads before a
+            // cross-thread flush such as disable/atexit walks the registry.
+            std::lock_guard lock(state.flushMutex);
+            if (state.size == 0U) {
+                data = nullptr;
+                return 0U;
+            }
+
+            data = state.data.data();
+            const std::size_t len = state.size;
+            state.size = 0U;
+            return len;
+        }
+        static inline void writeBufferedSinkPayload(
+            BufferedSinkTargetMode mode,
+            const char* data,
+            std::size_t len
+        ) noexcept {
+            if (len == 0U) {
+                return;
+            }
+
+            writeToBufferedSinkTarget(mode, data, len);
+        }
+        static inline void publishBufferedSinkPayload(
+            const char* data,
+            std::size_t len,
+            BufferedSinkFlushMode flushMode = BufferedSinkFlushMode::Deferred
+        ) noexcept {
+            if (len == 0U && flushMode == BufferedSinkFlushMode::Deferred) {
+                return;
+            }
+
+            const auto bufferedTarget = bufferedSinkTargetModeStorage().load(std::memory_order_acquire);
+            if (bufferedSinkTargetNeedsLock(bufferedTarget)) {
+                std::lock_guard lock(outMutex());
+                writeBufferedSinkPayload(bufferedTarget, data, len);
+                if (flushMode == BufferedSinkFlushMode::Forced) {
+                    flushBufferedSinkTarget(bufferedTarget);
+                }
+                return;
+            }
+
+            writeBufferedSinkPayload(bufferedTarget, data, len);
+            if (flushMode == BufferedSinkFlushMode::Forced) {
+                flushBufferedSinkTarget(bufferedTarget);
+            }
+        }
+        static inline void flushThreadBuffer(
+            ThreadBufferState& state,
+            BufferedSinkFlushMode flushMode = BufferedSinkFlushMode::Deferred
+        ) noexcept {
+            if (bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async) {
+                AsyncSinkBatch batch;
+                {
+                    std::lock_guard lock(state.flushMutex);
+                    if (state.size == 0U) return;
+                    batch.data.swap(state.data);
+                    batch.size = std::exchange(state.size, 0U);
+                    state.capacity = 0U;
+                }
+                enqueueAsyncSinkBatch(std::move(batch));
+                return;
+            }
+            const char* pendingData = nullptr;
+            const std::size_t pendingLen = drainThreadBuffer(state, pendingData);
+            publishBufferedSinkPayload(pendingData, pendingLen, flushMode);
+        }
+        static inline void flushAllThreadBuffers(
+            BufferedSinkFlushMode flushMode = BufferedSinkFlushMode::Forced
+        ) noexcept {
+            const auto states = snapshotThreadBuffers();
+            const auto bufferedTarget = bufferedSinkTargetModeStorage().load(std::memory_order_acquire);
+            const bool needsLock = bufferedSinkTargetNeedsLock(bufferedTarget);
+            std::unique_lock sinkLock(outMutex(), std::defer_lock);
+            if (needsLock) {
+                sinkLock.lock();
+            }
+
+            for (const auto& state : states) {
+                if (bufferedTarget == BufferedSinkTargetMode::Async) {
+                    flushThreadBuffer(*state);
+                    continue;
+                }
+                const char* pendingData = nullptr;
+                const std::size_t pendingLen = drainThreadBuffer(*state, pendingData);
+                writeBufferedSinkPayload(bufferedTarget, pendingData, pendingLen);
+            }
+
+            if (flushMode == BufferedSinkFlushMode::Forced) {
+                flushBufferedSinkTarget(bufferedTarget);
+            }
+        }
+        static inline std::mutex& sinkConfigMutex() noexcept {
+            return detail::singletonStorage<detail::SinkConfigMutexTag, std::mutex>();
+        }
+        static inline void restoreDefaultSinkState() noexcept {
+            activeSinkStorage().store(hasCustomSink() ? ActiveSink::Custom : ActiveSink::Default,
+                                      std::memory_order_release);
+            bufferedSinkTargetModeStorage().store(hasCustomSink() ? BufferedSinkTargetMode::Custom
+                                                                  : BufferedSinkTargetMode::Default,
+                                                  std::memory_order_release);
+            asyncSinkTargetModeStorage().store(hasCustomSink() ? AsyncSinkTargetMode::Custom
+                                                               : AsyncSinkTargetMode::Default,
+                                               std::memory_order_release);
+        }
+
+        static inline std::atomic<ActiveSink>& activeSinkStorage() noexcept {
+            return detail::singletonStorage<detail::ActiveSinkStorageTag, std::atomic<ActiveSink>>(ActiveSink::Default);
+        }
+        static inline std::atomic<bool>& processCleanupStartedStorage() noexcept {
+            return detail::singletonStorage<detail::ProcessCleanupStartedTag, std::atomic<bool>>(false);
+        }
+        static inline std::atomic<BufferedSinkTargetMode>& bufferedSinkTargetModeStorage() noexcept {
+            return detail::singletonStorage<detail::BufferedSinkTargetModeStorageTag, std::atomic<BufferedSinkTargetMode>>(BufferedSinkTargetMode::Default);
+        }
+        static inline std::atomic<AsyncSinkTargetMode>& asyncSinkTargetModeStorage() noexcept {
+            return detail::singletonStorage<detail::AsyncSinkTargetModeStorageTag, std::atomic<AsyncSinkTargetMode>>(AsyncSinkTargetMode::Default);
+        }
+        static inline std::function<void(const char*, std::size_t)>& customSinkWriteStorage() {
+            return detail::singletonStorage<detail::CustomSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
+        }
+        static inline std::function<void()>& customSinkFlushStorage() {
+            return detail::singletonStorage<detail::CustomSinkFlushStorageTag, std::function<void()>>();
+        }
+        static inline LogSink*& customLogSinkStorage() noexcept {
+            return detail::singletonStorage<detail::CustomLogSinkStorageTag, LogSink*>(nullptr);
+        }
+        static inline std::function<void(const char*, std::size_t)>& bufferedTestSinkWriteStorage() {
+            return detail::singletonStorage<detail::BufferedTestSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
+        }
+        static inline bool hasCustomSink() {
+            return customLogSinkStorage() != nullptr || static_cast<bool>(customSinkWriteStorage());
+        }
+        static inline std::atomic<std::uint64_t> droppedRecords_{0U};
+        static inline void recordDroppedPayload(const char* data, std::size_t len) noexcept {
+            if (len == 0U) return;
+            const auto records = static_cast<std::uint64_t>(std::count(data, data + len, '\n'))
+                + (data[len - 1U] != '\n' ? 1U : 0U);
+            droppedRecords_.fetch_add(records, std::memory_order_relaxed);
+        }
+        static inline thread_local bool customSinkCallbackActive_{false};
+        static inline void writeToCustomSink(const char* data, std::size_t len) noexcept {
+            if (customSinkCallbackActive_) {
+                // A callback may instrument its own work. Dropping that nested
+                // diagnostic record prevents recursive callback loops.
+                return;
+            }
+            customSinkCallbackActive_ = true;
+            try {
+                if (auto* sink = customLogSinkStorage()) {
+                    sink->write(data, len);
+                } else if (const auto& writeFn = customSinkWriteStorage(); writeFn) {
+                    writeFn(data, len);
+                }
+            } catch (...) {
+                recordDroppedPayload(data, len);
+                // A throwing std::function must not violate the timer's
+                // noexcept destructor contract.
+            }
+            customSinkCallbackActive_ = false;
+        }
+        static inline void flushCustomSink() noexcept {
+            if (customSinkCallbackActive_) {
+                return;
+            }
+            customSinkCallbackActive_ = true;
+            try {
+                if (auto* sink = customLogSinkStorage()) {
+                    sink->flush();
+                } else if (const auto& flushFn = customSinkFlushStorage(); flushFn) {
+                    flushFn();
+                }
+            } catch (...) {
+                // See writeToCustomSink(): diagnostics cannot terminate the
+                // application merely because a callback throws.
+            }
+            customSinkCallbackActive_ = false;
+        }
+        static inline void writeToActiveSink(ActiveSink sink, const char* data, std::size_t len) noexcept {
+            switch (sink) {
+                case ActiveSink::ThreadBuffered:
+                    threadBufferedSinkWrite(data, len);
+                    break;
+                case ActiveSink::Custom:
+                    writeToCustomSink(data, len);
+                    break;
+                case ActiveSink::Default:
+                    defaultSinkWrite(data, len);
+                    break;
+            }
+        }
+        static inline void flushActiveSink(ActiveSink sink) noexcept {
+            switch (sink) {
+                case ActiveSink::ThreadBuffered:
+                    threadBufferedSinkFlush();
+                    break;
+                case ActiveSink::Custom:
+                    flushCustomSink();
+                    break;
+                case ActiveSink::Default:
+                    defaultSinkFlush();
+                    break;
+            }
+        }
+        static inline void recordDirectCustomSinkLine() noexcept {
+            // Direct custom-sink writes call this with outMutex() held.
+            auto& linesSinceFlush = customSinkLineCounter();
+            ++linesSinceFlush;
+            if (linesSinceFlush == flushInterval()) { // configurable via SCOPE_TIMER_FLUSH_N
+                linesSinceFlush = 0U;
+                flushCustomSink();
+            }
+        }
+        static inline void writeToBufferedSinkTarget(
+            BufferedSinkTargetMode mode,
+            const char* data,
+            std::size_t len
+        ) noexcept {
+            switch (mode) {
+                case BufferedSinkTargetMode::Async:
+                    asyncSinkWrite(data, len);
+                    break;
+                case BufferedSinkTargetMode::Custom:
+                    writeToCustomSink(data, len);
+                    break;
+                case BufferedSinkTargetMode::TestCustom:
+                    if (const auto& writeFn = bufferedTestSinkWriteStorage(); writeFn) {
+                        writeFn(data, len);
+                    }
+                    break;
+                case BufferedSinkTargetMode::Default:
+                    defaultSinkWrite(data, len);
+                    break;
+            }
+        }
+        static inline void flushBufferedSinkTarget(BufferedSinkTargetMode mode) noexcept {
+            switch (mode) {
+                case BufferedSinkTargetMode::Async:
+                    noopSinkFlush();
+                    break;
+                case BufferedSinkTargetMode::Custom:
+                    flushCustomSink();
+                    break;
+                case BufferedSinkTargetMode::TestCustom:
+                    noopSinkFlush();
+                    break;
+                case BufferedSinkTargetMode::Default:
+                    defaultSinkFlush();
+                    break;
+            }
+        }
+
+        static inline constexpr std::size_t MaxAsyncSinkQueuedBytes = 16U * 1024U * 1024U;
+        static inline constexpr std::size_t MaxAsyncSinkRecycledBytes = 16U * 1024U * 1024U;
+
+        struct AsyncSinkState {
+            std::mutex mutex;
+            std::condition_variable ready;
+            std::condition_variable drained;
+            std::deque<AsyncSinkBatch> queue;
+            std::vector<AsyncSinkBatch> recycled;
+            std::thread worker;
+            std::size_t queuedBytes{0U};
+            std::size_t recycledBytes{0U};
+            bool running{false};
+            bool stop{false};
+            bool writing{false};
+            bool restartAfterSelfShutdown{false};
+        };
+
+        static inline AsyncSinkState& asyncSinkState() noexcept {
+            return detail::singletonStorage<detail::AsyncSinkStateTag, AsyncSinkState>();
+        }
+        static inline thread_local bool asyncSinkWorkerActive_{false};
+
+        static inline bool isAsyncSinkWorkerThread() noexcept {
+            return asyncSinkWorkerActive_;
+        }
+
+        static inline std::optional<AsyncSinkBatch> acquireAsyncSinkBatch(std::size_t len) noexcept {
+            try {
+                AsyncSinkBatch batch;
+                auto& state = asyncSinkState();
+                {
+                    std::lock_guard lock(state.mutex);
+                    if (!state.recycled.empty()) {
+                        batch = std::move(state.recycled.back());
+                        const auto capacity = batch.data.capacity();
+                        state.recycled.pop_back();
+                        state.recycledBytes = capacity > state.recycledBytes
+                            ? 0U
+                            : state.recycledBytes - capacity;
+                    }
+                }
+
+                if (batch.data.size() < len) {
+                    batch.data.resize(len);
+                }
+                batch.size = len;
+                return batch;
+            } catch (...) {
+                return std::nullopt;
+            }
+        }
+        static inline void enqueueAsyncSinkBatch(AsyncSinkBatch batch) noexcept {
+            const auto len = batch.size;
+            auto& state = asyncSinkState();
+            bool notifyWorker = false;
+            {
+                std::lock_guard lock(state.mutex);
+                if (!state.running || len > MaxAsyncSinkQueuedBytes || state.queuedBytes > MaxAsyncSinkQueuedBytes - len) {
+                    recordDroppedPayload(batch.data.data(), len);
+                    return;
+                }
+                notifyWorker = state.queue.empty();
+                try {
+                    state.queue.emplace_back(std::move(batch));
+                    state.queuedBytes += len;
+                } catch (...) {
+                    recordDroppedPayload(batch.data.data(), len);
+                    return;
+                }
+            }
+            if (notifyWorker) {
+                state.ready.notify_one();
+            }
+        }
+
+#if !defined(_WIN32)
+        static inline void writeIovecsBestEffort(int fd, ::iovec* vectors, std::size_t count) noexcept {
+            while (count != 0U) {
+                const auto written = ::writev(fd, vectors, static_cast<int>(count));
+                if (written < 0 && errno == EINTR) continue;
+                if (written <= 0) {
+                    for (std::size_t i = 0; i < count; ++i) {
+                        recordDroppedPayload(static_cast<const char*>(vectors[i].iov_base), vectors[i].iov_len);
+                    }
+                    return;
+                }
+                auto remaining = static_cast<std::size_t>(written);
+                while (count != 0U && remaining >= vectors->iov_len) {
+                    remaining -= vectors->iov_len;
+                    ++vectors;
+                    --count;
+                }
+                if (count != 0U) {
+                    vectors->iov_base = static_cast<char*>(vectors->iov_base) + remaining;
+                    vectors->iov_len -= remaining;
+                }
+            }
+        }
+#endif
+
+        static inline void defaultSinkWriteBatches(const std::deque<AsyncSinkBatch>& batches) noexcept {
+#if !defined(_WIN32)
+            constexpr std::size_t MaxIovecs = 64U;
+            std::array<::iovec, MaxIovecs> iovecs{};
+            std::size_t count = 0U;
+
+            int fd = logFd();
+            if (fd < 0) {
+                if (!ensureLogFdOpen()) {
+                    for (const auto& batch : batches) recordDroppedPayload(batch.data.data(), batch.size);
+                    return;
+                }
+                fd = logFd();
+                if (fd < 0) {
+                    return;
+                }
+            }
+
+            for (const auto& batch : batches) {
+                if (batch.size == 0U) {
+                    continue;
+                }
+
+                // POSIX writev() exposes iov_base as mutable even for write-only buffers.
+                // The payload bytes remain immutable; this cast only adapts the API's
+                // legacy type mismatch.
+                iovecs[count].iov_base = const_cast<char*>(batch.data.data()); // NOSONAR: writev() reads from iov_base but declares it mutable.
+                iovecs[count].iov_len = batch.size;
+                ++count;
+
+                if (count == iovecs.size()) {
+                    writeIovecsBestEffort(fd, iovecs.data(), count);
+                    count = 0U;
+                }
+            }
+
+            if (count != 0U) {
+                writeIovecsBestEffort(fd, iovecs.data(), count);
+            }
+#else
+            for (const auto& batch : batches) {
+                defaultSinkWrite(batch.data.data(), batch.size);
+            }
+#endif
+        }
+        static inline void runAsyncSinkWorker() noexcept {
+            auto& workerState = asyncSinkState();
+            asyncSinkWorkerActive_ = true;
+            for (;;) {
+                std::deque<AsyncSinkBatch> pending;
+                {
+                    std::unique_lock lock(workerState.mutex);
+                    workerState.ready.wait(lock, [&workerState] {
+                        return workerState.stop || !workerState.queue.empty();
+                    });
+                    if (workerState.queue.empty()) {
+                        if (workerState.stop) {
+                            break;
+                        }
+                        continue;
+                    }
+                    pending.swap(workerState.queue);
+                    workerState.queuedBytes = 0U;
+                    workerState.writing = true;
+                }
+
+                switch (asyncSinkTargetModeStorage().load(std::memory_order_acquire)) {
+                    case AsyncSinkTargetMode::Custom:
+                        for (const auto& batch : pending) {
+                            writeToCustomSink(batch.data.data(), batch.size);
+                        }
+                        break;
+                    case AsyncSinkTargetMode::Default:
+                        defaultSinkWriteBatches(pending);
+                        break;
+                }
+
+                {
+                    std::lock_guard lock(workerState.mutex);
+                    for (auto& batch : pending) {
+                        batch.size = 0U;
+                        const auto capacity = batch.data.capacity();
+                        if (capacity <= MaxAsyncSinkRecycledBytes - std::min(workerState.recycledBytes, MaxAsyncSinkRecycledBytes)) {
+                            try {
+                                workerState.recycled.emplace_back(std::move(batch));
+                                workerState.recycledBytes += capacity;
+                            } catch (...) {
+                                // Dropping a recycled batch is preferable to
+                                // terminating the application for diagnostics.
+                            }
+                        }
+                    }
+                    workerState.writing = false;
+                    if (workerState.queue.empty()) {
+                        workerState.drained.notify_all();
+                    }
+                }
+            }
+            switch (asyncSinkTargetModeStorage().load(std::memory_order_acquire)) {
+                case AsyncSinkTargetMode::Custom:
+                    flushCustomSink();
+                    break;
+                case AsyncSinkTargetMode::Default:
+                    defaultSinkFlush();
+                    break;
+            }
+
+            bool restart = false;
+            {
+                std::lock_guard lock(workerState.mutex);
+                restart = workerState.restartAfterSelfShutdown
+                    && activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
+                    && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async
+                    && !processCleanupStartedStorage().load(std::memory_order_acquire);
+                workerState.restartAfterSelfShutdown = false;
+                workerState.stop = false;
+                workerState.running = false;
+                workerState.writing = false;
+                workerState.drained.notify_all();
+            }
+            asyncSinkWorkerActive_ = false;
+            if (restart) {
+                ensureAsyncSinkRunning();
+            }
+        }
+
+        static inline void ensureAsyncSinkRunning() noexcept {
+            auto& state = asyncSinkState();
+            std::lock_guard lock(state.mutex);
+            if (state.running) {
+                return;
+            }
+            state.stop = false;
+            state.writing = false;
+            state.restartAfterSelfShutdown = false;
+            try {
+                state.worker = std::thread([] { runAsyncSinkWorker(); });
+                state.running = true;
+            } catch (...) {
+                state.running = false;
+                state.stop = false;
+            }
+        }
+
+        static inline void shutdownAsyncSink() noexcept {
+            auto& state = asyncSinkState();
+            std::unique_lock lock(state.mutex);
+            if (!state.running) {
+                return;
+            }
+            state.stop = true;
+            if (isAsyncSinkWorkerThread()) {
+                state.restartAfterSelfShutdown = true;
+                if (state.worker.joinable()) {
+                    state.worker.detach();
+                }
+                lock.unlock();
+                state.ready.notify_all();
+                return;
+            }
+            lock.unlock();
+            state.ready.notify_all();
+            if (state.worker.joinable()) {
+                state.worker.join();
+            }
+            lock.lock();
+            state.stop = false;
+            state.running = false;
+            state.writing = false;
+        }
+
+        // Test-only sink swap; safe when called during single-threaded setup/teardown.
+        static inline void setLogSinkForTests(
+            std::function<void(const char*, std::size_t)> writeFn = {},
+            std::function<void()> flushFn = {}
+        ) {
+            setCustomSinkCallbacks(std::move(writeFn), std::move(flushFn));
+        }
+
+        static inline void setCustomSinkCallbacks(
+            std::function<void(const char*, std::size_t)> writeFn = {},
+            std::function<void()> flushFn = {}
+        ) {
+            if (!canEmit()) {
+                // Sink registration is a quiescent setup/teardown operation;
+                // changing a callback while it is executing would invalidate
+                // the std::function being invoked.
+                return;
+            }
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+
+            const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
+                && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
+
+            std::lock_guard outputLock(outMutex());
+            closeLogFd();
+            customLogSinkStorage() = nullptr;
+            customSinkWriteStorage() = std::move(writeFn);
+            customSinkFlushStorage() = flushFn ? std::move(flushFn) : std::function<void()>{};
+            updateCustomSinkRouting(asyncModeActive);
+        }
+
+        static inline void setCustomLogSink(LogSink* sink) {
+            if (!canEmit()) {
+                return;
+            }
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+
+            const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
+                && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
+
+            std::lock_guard outputLock(outMutex());
+            closeLogFd();
+            customLogSinkStorage() = sink;
+            customSinkWriteStorage() = {};
+            customSinkFlushStorage() = {};
+            updateCustomSinkRouting(asyncModeActive);
+        }
+
+        static inline void updateCustomSinkRouting(bool asyncModeActive) {
+            // A newly configured direct sink starts a fresh flush cadence.
+            // This function is called with outMutex() held, which also protects
+            // the counter on the steady-state write path.
+            customSinkLineCounter() = 0U;
+
+            if (hasCustomSink()) {
+                if (activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::Default) {
+                    activeSinkStorage().store(ActiveSink::Custom, std::memory_order_release);
+                }
+                if (bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Default) {
+                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Custom, std::memory_order_release);
+                }
+                asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Custom, std::memory_order_release);
+            } else {
+                if (activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::Custom) {
+                    activeSinkStorage().store(ActiveSink::Default, std::memory_order_release);
+                }
+                if (bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Custom) {
+                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default, std::memory_order_release);
+                }
+                asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Default, std::memory_order_release);
+            }
+
+            if (asyncModeActive) {
+                ensureAsyncSinkRunning();
+            }
+        }
+
+        // Test-only: allow buffered sink to flush to a custom target (e.g., in-memory sink).
+        static inline void setBufferedSinkTargetForTests(
+            std::function<void(const char*, std::size_t)> writeFn = {}
+        ) {
+            std::lock_guard sinkStateLock(sinkConfigMutex());
+            flushAllThreadBuffers();
+            asyncSinkFlush();
+            shutdownAsyncSink();
+            bufferedTestSinkWriteStorage() = std::move(writeFn);
+            bufferedSinkTargetModeStorage().store(
+                bufferedTestSinkWriteStorage() ? BufferedSinkTargetMode::TestCustom : BufferedSinkTargetMode::Default,
+                std::memory_order_release
+            );
+        }
+
+        static inline int openLogFileForAppend(const std::string& path) noexcept {
+#if defined(_WIN32)
+            const HANDLE handle = ::CreateFileA(
+                path.c_str(),
+                FILE_APPEND_DATA,
+                FILE_SHARE_READ,
+                nullptr,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                nullptr
+            );
+            if (handle == INVALID_HANDLE_VALUE) {
+                return -1;
+            }
+            BY_HANDLE_FILE_INFORMATION status{};
+            if (::GetFileInformationByHandle(handle, &status) == 0
+                || (status.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U) {
+                (void)::CloseHandle(handle);
+                return -1;
+            }
+
+            int openFlags = _O_WRONLY | _O_APPEND;
+#ifdef _O_BINARY
+            openFlags |= _O_BINARY;
+#endif
+#ifdef _O_NOINHERIT
+            openFlags |= _O_NOINHERIT;
+#endif
+            const int fd = ::_open_osfhandle(
+                reinterpret_cast<intptr_t>(handle),
+                openFlags
+            );
+            if (fd < 0) {
+                (void)::CloseHandle(handle);
+            }
+            return fd;
+#else
+            int openFlags = O_CREAT | O_WRONLY | O_APPEND | O_NONBLOCK;
+#ifdef O_CLOEXEC
+            openFlags |= O_CLOEXEC;
+#endif
+#ifdef O_NOFOLLOW
+            openFlags |= O_NOFOLLOW;
+#else
+            // A predictable filename under /tmp must not fall back to an
+            // implementation that follows attacker-controlled symlinks.
+            return -1;
+#endif
+            const int fd = ::open(path.c_str(), openFlags, 0600);
+            if (fd < 0) {
+                return -1;
+            }
+            struct stat status {};
+            if (::fstat(fd, &status) != 0
+                || !S_ISREG(status.st_mode)
+                || status.st_uid != ::geteuid()
+                || status.st_nlink != 1
+                || ::fchmod(fd, 0600) != 0) {
+                (void)::close(fd);
+                return -1;
+            }
+#ifndef O_CLOEXEC
+            (void)::fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
+            return fd;
+#endif
+        }
+
+        static inline void closeFd(int fd) noexcept {
+#if defined(_WIN32)
+            (void)::_close(fd);
+#else
+            (void)::close(fd);
+#endif
+        }
+
+        static inline void writeFdBestEffort(int fd, const char* data, std::size_t len) noexcept {
+            while (len != 0U) {
+#if defined(_WIN32)
+                const auto chunk = static_cast<unsigned int>(std::min(len,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max())));
+                const auto written = ::_write(fd, data, chunk);
+#else
+                const auto written = ::write(fd, data, len);
+#endif
+                if (written < 0 && errno == EINTR) continue;
+                if (written <= 0) {
+                    recordDroppedPayload(data, len);
+                    return;
+                }
+                data += written;
+                len -= static_cast<std::size_t>(written);
+            }
+        }
+
+        struct LogOpenState {
+            std::string lastFailedPath;
+            std::chrono::steady_clock::time_point lastFailure{};
+            bool lastAttemptFailed{false};
+        };
+
+        static inline LogOpenState& logOpenState() noexcept {
+            return detail::singletonStorage<detail::LogOpenStateTag, LogOpenState>();
+        }
+
+        /**
+         * @brief Opens the default log file descriptor on first use (best-effort).
+         */
+        static inline bool ensureLogFdOpen() noexcept {
+            int& fd = logFd();
+            if (fd >= 0) {
+                return true;
+            }
+
+            try {
+                auto& state = logOpenState();
+                const std::string path = logDirectory() + "ScopeTimer.log";
+                const auto now = std::chrono::steady_clock::now();
+                constexpr auto RetryDelay = std::chrono::milliseconds{100};
+
+                if (state.lastAttemptFailed
+                    && path == state.lastFailedPath
+                    && now - state.lastFailure < RetryDelay) {
+                    return false;
+                }
+
+                if (int newFd = openLogFileForAppend(path); newFd >= 0) {
+                    fd = newFd;
+                    state.lastAttemptFailed = false;
+                    state.lastFailedPath.clear();
+                    registerProcessCleanup();
+                    return true;
+                }
+
+                state.lastFailedPath = path;
+                state.lastFailure = now;
+                state.lastAttemptFailed = true;
+                return false;
+            } catch (...) {
+                return false;
+            }
+        }
+
+        /**
+         * @brief Registers the atexit handler that drains active sinks and closes the log descriptor.
+         */
+        static inline void registerProcessCleanup() noexcept {
+            // Function-local static initialization is synchronized by C++11.
+            // This can be reached concurrently through the default sink and a
+            // buffered-sink setup call, so a hand-rolled boolean would race.
+            static const bool registered = []() noexcept {
+                return std::atexit([]() noexcept {
+                    std::lock_guard sinkStateLock(sinkConfigMutex());
+                    processCleanupStartedStorage().store(true, std::memory_order_release);
+                    flushAllThreadBuffers();
+                    asyncSinkFlush();
+                    shutdownAsyncSink();
+                    std::lock_guard outputLock(outMutex());
+                    closeLogFd();
+                    customLogSinkStorage() = nullptr;
+                    customSinkWriteStorage() = {};
+                    customSinkFlushStorage() = {};
+                    bufferedTestSinkWriteStorage() = {};
+                    activeSinkStorage().store(ActiveSink::Default, std::memory_order_release);
+                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default, std::memory_order_release);
+                    asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Default, std::memory_order_release);
+                }) == 0;
+            }();
+            (void)registered;
+        }
+
+        /**
+         * @brief Singleton storage for the log descriptor.
+         */
+        static inline int logFdStorage_{-1};
+        static inline int& logFd() noexcept {
+            return logFdStorage_;
+        }
+
+        /**
+         * @brief Resets the log descriptor so it will be reopened on demand.
+         */
+        static inline void closeLogFd() noexcept {
+            int& fd = logFd();
+            if (fd >= 0) {
+                closeFd(fd);
+                fd = -1;
+            }
+        }
+
+        /**
+         * @brief Test-only accessor to observe the current log descriptor.
+         */
+        static inline int defaultLogFdForTests() noexcept {
+            return logFd();
+        }
+
+        /**
+         * @brief Test-only helper that forces the log descriptor closed.
+         */
+        static inline void closeLogFdForTests() noexcept {
+            closeLogFd();
+        }
+
+    };
+
+    // Formatting has no ownership of timers or sinks.
+    class TimerFormatting {
+    protected:
+        friend class ::xyzzy::scopetimer::ScopeTimer_TestFriend;
         // One-time-selected elapsed-time formatter infrastructure
         // I call through a cached function pointer to avoid branching in the hot path.
         enum class TimeFormat { Auto, Seconds, Millis, Micros, Nanos };
@@ -937,7 +1749,7 @@ namespace xyzzy::scopetimer {
                 if (s == "NANOS")   return &fmtNanos;
             }
             return &fmtAuto;
-        }        
+        }
 
         /**
          * @brief Accessor for the cached formatter function pointer.
@@ -1325,760 +2137,15 @@ namespace xyzzy::scopetimer {
             return tlsLineBuffer_;
         }
 
-        /**
-         * @brief Per-thread assembly buffer for the full log line.
-         */
-        static void defaultSinkWrite(const char* data, std::size_t len) noexcept;
-        static void defaultSinkFlush() noexcept;
-        static void noopSinkFlush() noexcept;
-        static void threadBufferedSinkWrite(const char* data, std::size_t len) noexcept;
-        static void threadBufferedSinkFlush() noexcept;
-        static void asyncSinkWrite(const char* data, std::size_t len) noexcept;
-        static void asyncSinkFlush() noexcept;
+        static inline thread_local FormatBuffers tlsFormatBuffers_{};
+        static inline thread_local LineBuffer tlsLineBuffer_{};
 
-        enum class ActiveSink {
-            Default,
-            ThreadBuffered,
-            Custom,
-        };
+    };
 
-        enum class BufferedSinkTargetMode {
-            Default,
-            Async,
-            Custom,
-            TestCustom,
-        };
-
-        enum class BufferedSinkFlushMode {
-            Deferred,
-            Forced,
-        };
-
-        enum class AsyncSinkTargetMode {
-            Default,
-            Custom,
-        };
-
-        struct ThreadBufferState {
-            std::mutex flushMutex;
-            std::vector<char> data;
-            std::size_t size{0U};
-            std::size_t capacity{0U};
-        };
-
-        struct ThreadBufferHandle {
-            std::shared_ptr<ThreadBufferState> state;
-
-            ThreadBufferHandle() noexcept {
-                try {
-                    state = std::make_shared<ThreadBufferState>();
-                    registerThreadBuffer(state);
-                } catch (...) {
-                    // Profiling must not terminate the host when thread-local
-                    // diagnostic storage cannot be allocated.
-                    state.reset();
-                }
-            }
-
-            ~ThreadBufferHandle() {
-                if (state) {
-                    if (!ScopeTimer::processCleanupStartedStorage().load(std::memory_order_acquire)) {
-                        ScopeTimer::flushThreadBuffer(*state);
-                    }
-                    ScopeTimer::unregisterThreadBuffer(state);
-                }
-            }
-
-            ThreadBufferHandle(const ThreadBufferHandle&) = delete;
-            ThreadBufferHandle& operator=(const ThreadBufferHandle&) = delete;
-            ThreadBufferHandle(ThreadBufferHandle&&) = delete;
-            ThreadBufferHandle& operator=(ThreadBufferHandle&&) = delete;
-        };
-
-        static inline ThreadBufferState* threadLocalBuffer() noexcept {
-            thread_local ThreadBufferHandle handle;
-            return handle.state.get();
-        }
-        static inline std::size_t normalizeSinkFlushBytes(std::size_t flushBytes) noexcept {
-            if (flushBytes == 0U) {
-                return DefaultSinkFlushBytes;
-            }
-            return std::min(flushBytes, MaxSinkFlushBytes);
-        }
-        static inline std::atomic<std::size_t>& threadBufferFlushBytesStorage() noexcept {
-            return detail::singletonStorage<detail::ThreadBufferFlushBytesTag, std::atomic<std::size_t>>(DefaultSinkFlushBytes);
-        }
-        static inline std::size_t threadBufferFlushBytes() noexcept {
-            // The threshold is configuration state written under sinkConfigMutex(); a
-            // relaxed load is sufficient and avoids an unnecessary fence per append.
-            return threadBufferFlushBytesStorage().load(std::memory_order_relaxed);
-        }
-        static inline std::mutex& threadBufferRegistryMutex() noexcept {
-            return detail::singletonStorage<detail::ThreadBufferRegistryMutexTag, std::mutex>();
-        }
-        static inline std::vector<std::weak_ptr<ThreadBufferState>>& threadBufferRegistry() noexcept {
-            return detail::singletonStorage<detail::ThreadBufferRegistryTag, std::vector<std::weak_ptr<ThreadBufferState>>>();
-        }
-        static inline void registerThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
-            try {
-                std::lock_guard lock(threadBufferRegistryMutex());
-                threadBufferRegistry().emplace_back(state);
-            } catch (...) {
-                // The owning thread still flushes its local buffer at thread
-                // exit; only cross-thread best-effort draining is unavailable.
-            }
-        }
-        static inline void unregisterThreadBuffer(const std::shared_ptr<ThreadBufferState>& state) noexcept {
-            try {
-                std::lock_guard lock(threadBufferRegistryMutex());
-                auto& registry = threadBufferRegistry();
-                registry.erase(
-                    std::remove_if(registry.begin(), registry.end(), [&state](const auto& weakState) {
-                        return weakState.expired()
-                            || (!weakState.owner_before(state) && !state.owner_before(weakState));
-                    }),
-                    registry.end()
-                );
-            } catch (...) {
-                // Registry maintenance is best-effort; the shared state still
-                // releases normally even if its weak entry cannot be removed.
-            }
-        }
-        static inline std::vector<std::shared_ptr<ThreadBufferState>> snapshotThreadBuffers() noexcept {
-            try {
-                std::vector<std::shared_ptr<ThreadBufferState>> states;
-                std::lock_guard lock(threadBufferRegistryMutex());
-                auto& registry = threadBufferRegistry();
-                registry.erase(
-                    std::remove_if(registry.begin(), registry.end(), [&states](const auto& weakState) {
-                        if (auto state = weakState.lock()) {
-                            states.push_back(state);
-                            return false;
-                        }
-                        return true;
-                    }),
-                    registry.end()
-                );
-                return states;
-            } catch (...) {
-                return {};
-            }
-        }
-        static inline bool ensureThreadBufferCapacity(ThreadBufferState& state, std::size_t flushBytes) noexcept {
-            if (state.capacity >= flushBytes) {
-                return true;
-            }
-
-            std::lock_guard lock(state.flushMutex);
-            if (state.capacity >= flushBytes) {
-                return true;
-            }
-
-            try {
-                state.data.resize(flushBytes);
-                state.capacity = flushBytes;
-                return true;
-            } catch (...) {
-                return false;
-            }
-        }
-        static inline bool bufferedSinkTargetNeedsLock(BufferedSinkTargetMode mode) noexcept {
-            return mode != BufferedSinkTargetMode::Async;
-        }
-        static inline std::size_t drainThreadBuffer(ThreadBufferState& state, const char*& data) noexcept {
-            // Buffered sink mode changes are documented as setup/teardown steps.
-            // Callers are expected to quiesce profiled worker threads before a
-            // cross-thread flush such as disable/atexit walks the registry.
-            std::lock_guard lock(state.flushMutex);
-            if (state.size == 0U) {
-                data = nullptr;
-                return 0U;
-            }
-
-            data = state.data.data();
-            const std::size_t len = state.size;
-            state.size = 0U;
-            return len;
-        }
-        static inline void writeBufferedSinkPayload(
-            BufferedSinkTargetMode mode,
-            const char* data,
-            std::size_t len
-        ) noexcept {
-            if (len == 0U) {
-                return;
-            }
-
-            writeToBufferedSinkTarget(mode, data, len);
-        }
-        static inline void publishBufferedSinkPayload(
-            const char* data,
-            std::size_t len,
-            BufferedSinkFlushMode flushMode = BufferedSinkFlushMode::Deferred
-        ) noexcept {
-            if (len == 0U && flushMode == BufferedSinkFlushMode::Deferred) {
-                return;
-            }
-
-            const auto bufferedTarget = bufferedSinkTargetModeStorage().load(std::memory_order_acquire);
-            if (bufferedSinkTargetNeedsLock(bufferedTarget)) {
-                std::lock_guard lock(outMutex());
-                writeBufferedSinkPayload(bufferedTarget, data, len);
-                if (flushMode == BufferedSinkFlushMode::Forced) {
-                    flushBufferedSinkTarget(bufferedTarget);
-                }
-                return;
-            }
-
-            writeBufferedSinkPayload(bufferedTarget, data, len);
-            if (flushMode == BufferedSinkFlushMode::Forced) {
-                flushBufferedSinkTarget(bufferedTarget);
-            }
-        }
-        static inline void flushThreadBuffer(
-            ThreadBufferState& state,
-            BufferedSinkFlushMode flushMode = BufferedSinkFlushMode::Deferred
-        ) noexcept {
-            const char* pendingData = nullptr;
-            const std::size_t pendingLen = drainThreadBuffer(state, pendingData);
-            publishBufferedSinkPayload(pendingData, pendingLen, flushMode);
-        }
-        static inline void flushAllThreadBuffers(
-            BufferedSinkFlushMode flushMode = BufferedSinkFlushMode::Forced
-        ) noexcept {
-            const auto states = snapshotThreadBuffers();
-            const auto bufferedTarget = bufferedSinkTargetModeStorage().load(std::memory_order_acquire);
-            const bool needsLock = bufferedSinkTargetNeedsLock(bufferedTarget);
-            std::unique_lock sinkLock(outMutex(), std::defer_lock);
-            if (needsLock) {
-                sinkLock.lock();
-            }
-
-            for (const auto& state : states) {
-                const char* pendingData = nullptr;
-                const std::size_t pendingLen = drainThreadBuffer(*state, pendingData);
-                writeBufferedSinkPayload(bufferedTarget, pendingData, pendingLen);
-            }
-
-            if (flushMode == BufferedSinkFlushMode::Forced) {
-                flushBufferedSinkTarget(bufferedTarget);
-            }
-        }
-        static inline std::mutex& sinkConfigMutex() noexcept {
-            return detail::singletonStorage<detail::SinkConfigMutexTag, std::mutex>();
-        }
-        static inline void restoreDefaultSinkState() noexcept {
-            activeSinkStorage().store(hasCustomSink() ? ActiveSink::Custom : ActiveSink::Default,
-                                      std::memory_order_release);
-            bufferedSinkTargetModeStorage().store(hasCustomSink() ? BufferedSinkTargetMode::Custom
-                                                                  : BufferedSinkTargetMode::Default,
-                                                  std::memory_order_release);
-            asyncSinkTargetModeStorage().store(hasCustomSink() ? AsyncSinkTargetMode::Custom
-                                                               : AsyncSinkTargetMode::Default,
-                                               std::memory_order_release);
-        }
-
-        static inline std::atomic<ActiveSink>& activeSinkStorage() noexcept {
-            return detail::singletonStorage<detail::ActiveSinkStorageTag, std::atomic<ActiveSink>>(ActiveSink::Default);
-        }
-        static inline std::atomic<bool>& processCleanupStartedStorage() noexcept {
-            return detail::singletonStorage<detail::ProcessCleanupStartedTag, std::atomic<bool>>(false);
-        }
-        static inline std::atomic<BufferedSinkTargetMode>& bufferedSinkTargetModeStorage() noexcept {
-            return detail::singletonStorage<detail::BufferedSinkTargetModeStorageTag, std::atomic<BufferedSinkTargetMode>>(BufferedSinkTargetMode::Default);
-        }
-        static inline std::atomic<AsyncSinkTargetMode>& asyncSinkTargetModeStorage() noexcept {
-            return detail::singletonStorage<detail::AsyncSinkTargetModeStorageTag, std::atomic<AsyncSinkTargetMode>>(AsyncSinkTargetMode::Default);
-        }
-        static inline std::function<void(const char*, std::size_t)>& customSinkWriteStorage() {
-            return detail::singletonStorage<detail::CustomSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
-        }
-        static inline std::function<void()>& customSinkFlushStorage() {
-            return detail::singletonStorage<detail::CustomSinkFlushStorageTag, std::function<void()>>();
-        }
-        static inline LogSink*& customLogSinkStorage() noexcept {
-            return detail::singletonStorage<detail::CustomLogSinkStorageTag, LogSink*>(nullptr);
-        }
-        static inline std::function<void(const char*, std::size_t)>& bufferedTestSinkWriteStorage() {
-            return detail::singletonStorage<detail::BufferedTestSinkWriteStorageTag, std::function<void(const char*, std::size_t)>>();
-        }
-        static inline bool hasCustomSink() {
-            return customLogSinkStorage() != nullptr || static_cast<bool>(customSinkWriteStorage());
-        }
-        static inline thread_local bool customSinkCallbackActive_{false};
-        static inline void writeToCustomSink(const char* data, std::size_t len) noexcept {
-            if (customSinkCallbackActive_) {
-                // A callback may instrument its own work. Dropping that nested
-                // diagnostic record prevents recursive callback loops.
-                return;
-            }
-            customSinkCallbackActive_ = true;
-            try {
-                if (auto* sink = customLogSinkStorage()) {
-                    sink->write(data, len);
-                } else if (const auto& writeFn = customSinkWriteStorage(); writeFn) {
-                    writeFn(data, len);
-                }
-            } catch (...) {
-                // A throwing std::function must not violate the timer's
-                // noexcept destructor contract.
-            }
-            customSinkCallbackActive_ = false;
-        }
-        static inline void flushCustomSink() noexcept {
-            if (customSinkCallbackActive_) {
-                return;
-            }
-            customSinkCallbackActive_ = true;
-            try {
-                if (auto* sink = customLogSinkStorage()) {
-                    sink->flush();
-                } else if (const auto& flushFn = customSinkFlushStorage(); flushFn) {
-                    flushFn();
-                }
-            } catch (...) {
-                // See writeToCustomSink(): diagnostics cannot terminate the
-                // application merely because a callback throws.
-            }
-            customSinkCallbackActive_ = false;
-        }
-        static inline void writeToActiveSink(ActiveSink sink, const char* data, std::size_t len) noexcept {
-            switch (sink) {
-                case ActiveSink::ThreadBuffered:
-                    threadBufferedSinkWrite(data, len);
-                    break;
-                case ActiveSink::Custom:
-                    writeToCustomSink(data, len);
-                    break;
-                case ActiveSink::Default:
-                    defaultSinkWrite(data, len);
-                    break;
-            }
-        }
-        static inline void flushActiveSink(ActiveSink sink) noexcept {
-            switch (sink) {
-                case ActiveSink::ThreadBuffered:
-                    threadBufferedSinkFlush();
-                    break;
-                case ActiveSink::Custom:
-                    flushCustomSink();
-                    break;
-                case ActiveSink::Default:
-                    defaultSinkFlush();
-                    break;
-            }
-        }
-        static inline void recordDirectCustomSinkLine() noexcept {
-            // Direct custom-sink writes call this with outMutex() held.
-            auto& linesSinceFlush = customSinkLineCounter();
-            ++linesSinceFlush;
-            if (linesSinceFlush == flushInterval()) { // configurable via SCOPE_TIMER_FLUSH_N
-                linesSinceFlush = 0U;
-                flushCustomSink();
-            }
-        }
-        static inline void writeToBufferedSinkTarget(
-            BufferedSinkTargetMode mode,
-            const char* data,
-            std::size_t len
-        ) noexcept {
-            switch (mode) {
-                case BufferedSinkTargetMode::Async:
-                    asyncSinkWrite(data, len);
-                    break;
-                case BufferedSinkTargetMode::Custom:
-                    writeToCustomSink(data, len);
-                    break;
-                case BufferedSinkTargetMode::TestCustom:
-                    if (const auto& writeFn = bufferedTestSinkWriteStorage(); writeFn) {
-                        writeFn(data, len);
-                    }
-                    break;
-                case BufferedSinkTargetMode::Default:
-                    defaultSinkWrite(data, len);
-                    break;
-            }
-        }
-        static inline void flushBufferedSinkTarget(BufferedSinkTargetMode mode) noexcept {
-            switch (mode) {
-                case BufferedSinkTargetMode::Async:
-                    noopSinkFlush();
-                    break;
-                case BufferedSinkTargetMode::Custom:
-                    flushCustomSink();
-                    break;
-                case BufferedSinkTargetMode::TestCustom:
-                    noopSinkFlush();
-                    break;
-                case BufferedSinkTargetMode::Default:
-                    defaultSinkFlush();
-                    break;
-            }
-        }
-
-        struct AsyncSinkBatch {
-            std::vector<char> data;
-            std::size_t size{0U};
-        };
-
-        static inline constexpr std::size_t MaxAsyncSinkQueuedBytes = 16U * 1024U * 1024U;
-        static inline constexpr std::size_t MaxAsyncSinkRecycledBytes = 16U * 1024U * 1024U;
-
-        struct AsyncSinkState {
-            std::mutex mutex;
-            std::condition_variable ready;
-            std::condition_variable drained;
-            std::deque<AsyncSinkBatch> queue;
-            std::vector<AsyncSinkBatch> recycled;
-            std::thread worker;
-            std::size_t queuedBytes{0U};
-            std::size_t recycledBytes{0U};
-            bool running{false};
-            bool stop{false};
-            bool writing{false};
-            bool restartAfterSelfShutdown{false};
-        };
-
-        static inline AsyncSinkState& asyncSinkState() noexcept {
-            return detail::singletonStorage<detail::AsyncSinkStateTag, AsyncSinkState>();
-        }
-        static inline thread_local bool asyncSinkWorkerActive_{false};
-
-        static inline bool isAsyncSinkWorkerThread() noexcept {
-            return asyncSinkWorkerActive_;
-        }
-
-        static inline std::optional<AsyncSinkBatch> acquireAsyncSinkBatch(std::size_t len) noexcept {
-            try {
-                AsyncSinkBatch batch;
-                auto& state = asyncSinkState();
-                {
-                    std::lock_guard lock(state.mutex);
-                    if (!state.recycled.empty()) {
-                        batch = std::move(state.recycled.back());
-                        const auto capacity = batch.data.capacity();
-                        state.recycled.pop_back();
-                        state.recycledBytes = capacity > state.recycledBytes
-                            ? 0U
-                            : state.recycledBytes - capacity;
-                    }
-                }
-
-                if (batch.data.size() < len) {
-                    batch.data.resize(len);
-                }
-                batch.size = len;
-                return batch;
-            } catch (...) {
-                return std::nullopt;
-            }
-        }
-        static inline void defaultSinkWriteBatches(const std::deque<AsyncSinkBatch>& batches) noexcept {
-#if !defined(_WIN32)
-            constexpr std::size_t MaxIovecs = 64U;
-            std::array<::iovec, MaxIovecs> iovecs{};
-            std::size_t count = 0U;
-
-            int fd = logFd();
-            if (fd < 0) {
-                if (!ensureLogFdOpen()) {
-                    return;
-                }
-                fd = logFd();
-                if (fd < 0) {
-                    return;
-                }
-            }
-
-            for (const auto& batch : batches) {
-                if (batch.size == 0U) {
-                    continue;
-                }
-
-                // POSIX writev() exposes iov_base as mutable even for write-only buffers.
-                // The payload bytes remain immutable; this cast only adapts the API's
-                // legacy type mismatch.
-                iovecs[count].iov_base = const_cast<char*>(batch.data.data()); // NOSONAR: writev() reads from iov_base but declares it mutable.
-                iovecs[count].iov_len = batch.size;
-                ++count;
-
-                if (count == iovecs.size()) {
-                    const ssize_t unused = ::writev(fd, iovecs.data(), static_cast<int>(count));
-                    (void)unused;
-                    count = 0U;
-                }
-            }
-
-            if (count != 0U) {
-                const ssize_t unused = ::writev(fd, iovecs.data(), static_cast<int>(count));
-                (void)unused;
-            }
-#else
-            for (const auto& batch : batches) {
-                defaultSinkWrite(batch.data.data(), batch.size);
-            }
-#endif
-        }
-        static inline void runAsyncSinkWorker() noexcept {
-            auto& workerState = asyncSinkState();
-            asyncSinkWorkerActive_ = true;
-            for (;;) {
-                std::deque<AsyncSinkBatch> pending;
-                {
-                    std::unique_lock lock(workerState.mutex);
-                    workerState.ready.wait(lock, [&workerState] {
-                        return workerState.stop || !workerState.queue.empty();
-                    });
-                    if (workerState.queue.empty()) {
-                        if (workerState.stop) {
-                            break;
-                        }
-                        continue;
-                    }
-                    pending.swap(workerState.queue);
-                    workerState.queuedBytes = 0U;
-                    workerState.writing = true;
-                }
-
-                switch (asyncSinkTargetModeStorage().load(std::memory_order_acquire)) {
-                    case AsyncSinkTargetMode::Custom:
-                        for (const auto& batch : pending) {
-                            writeToCustomSink(batch.data.data(), batch.size);
-                        }
-                        break;
-                    case AsyncSinkTargetMode::Default:
-                        defaultSinkWriteBatches(pending);
-                        break;
-                }
-
-                {
-                    std::lock_guard lock(workerState.mutex);
-                    for (auto& batch : pending) {
-                        batch.size = 0U;
-                        const auto capacity = batch.data.capacity();
-                        if (capacity <= MaxAsyncSinkRecycledBytes - std::min(workerState.recycledBytes, MaxAsyncSinkRecycledBytes)) {
-                            try {
-                                workerState.recycled.emplace_back(std::move(batch));
-                                workerState.recycledBytes += capacity;
-                            } catch (...) {
-                                // Dropping a recycled batch is preferable to
-                                // terminating the application for diagnostics.
-                            }
-                        }
-                    }
-                    workerState.writing = false;
-                    if (workerState.queue.empty()) {
-                        workerState.drained.notify_all();
-                    }
-                }
-            }
-            switch (asyncSinkTargetModeStorage().load(std::memory_order_acquire)) {
-                case AsyncSinkTargetMode::Custom:
-                    flushCustomSink();
-                    break;
-                case AsyncSinkTargetMode::Default:
-                    defaultSinkFlush();
-                    break;
-            }
-
-            bool restart = false;
-            {
-                std::lock_guard lock(workerState.mutex);
-                restart = workerState.restartAfterSelfShutdown
-                    && activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
-                    && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async
-                    && !processCleanupStartedStorage().load(std::memory_order_acquire);
-                workerState.restartAfterSelfShutdown = false;
-                workerState.stop = false;
-                workerState.running = false;
-                workerState.writing = false;
-                workerState.drained.notify_all();
-            }
-            asyncSinkWorkerActive_ = false;
-            if (restart) {
-                ensureAsyncSinkRunning();
-            }
-        }
-
-        static inline void ensureAsyncSinkRunning() noexcept {
-            auto& state = asyncSinkState();
-            std::lock_guard lock(state.mutex);
-            if (state.running) {
-                return;
-            }
-            state.stop = false;
-            state.writing = false;
-            state.restartAfterSelfShutdown = false;
-            try {
-                state.worker = std::thread([] { runAsyncSinkWorker(); });
-                state.running = true;
-            } catch (...) {
-                state.running = false;
-                state.stop = false;
-            }
-        }
-
-        static inline void shutdownAsyncSink() noexcept {
-            auto& state = asyncSinkState();
-            std::unique_lock lock(state.mutex);
-            if (!state.running) {
-                return;
-            }
-            state.stop = true;
-            if (isAsyncSinkWorkerThread()) {
-                state.restartAfterSelfShutdown = true;
-                if (state.worker.joinable()) {
-                    state.worker.detach();
-                }
-                lock.unlock();
-                state.ready.notify_all();
-                return;
-            }
-            lock.unlock();
-            state.ready.notify_all();
-            if (state.worker.joinable()) {
-                state.worker.join();
-            }
-            lock.lock();
-            state.stop = false;
-            state.running = false;
-            state.writing = false;
-        }
-
-        // Test-only sink swap; safe when called during single-threaded setup/teardown.
-        static inline void setLogSinkForTests(
-            std::function<void(const char*, std::size_t)> writeFn = {},
-            std::function<void()> flushFn = {}
-        ) {
-            setCustomSinkCallbacks(std::move(writeFn), std::move(flushFn));
-        }
-
-        static inline void setCustomSinkCallbacks(
-            std::function<void(const char*, std::size_t)> writeFn = {},
-            std::function<void()> flushFn = {}
-        ) {
-            if (customSinkCallbackActive_) {
-                // Sink registration is a quiescent setup/teardown operation;
-                // changing a callback while it is executing would invalidate
-                // the std::function being invoked.
-                return;
-            }
-            std::lock_guard sinkStateLock(sinkConfigMutex());
-            flushAllThreadBuffers();
-            asyncSinkFlush();
-            shutdownAsyncSink();
-
-            const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
-                && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
-
-            std::lock_guard outputLock(outMutex());
-            closeLogFd();
-            customLogSinkStorage() = nullptr;
-            customSinkWriteStorage() = std::move(writeFn);
-            customSinkFlushStorage() = flushFn ? std::move(flushFn) : std::function<void()>{};
-            updateCustomSinkRouting(asyncModeActive);
-        }
-
-        static inline void setCustomLogSink(LogSink* sink) {
-            if (customSinkCallbackActive_) {
-                return;
-            }
-            std::lock_guard sinkStateLock(sinkConfigMutex());
-            flushAllThreadBuffers();
-            asyncSinkFlush();
-            shutdownAsyncSink();
-
-            const bool asyncModeActive = activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::ThreadBuffered
-                && bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Async;
-
-            std::lock_guard outputLock(outMutex());
-            closeLogFd();
-            customLogSinkStorage() = sink;
-            customSinkWriteStorage() = {};
-            customSinkFlushStorage() = {};
-            updateCustomSinkRouting(asyncModeActive);
-        }
-
-        static inline void updateCustomSinkRouting(bool asyncModeActive) {
-            // A newly configured direct sink starts a fresh flush cadence.
-            // This function is called with outMutex() held, which also protects
-            // the counter on the steady-state write path.
-            customSinkLineCounter() = 0U;
-
-            if (hasCustomSink()) {
-                if (activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::Default) {
-                    activeSinkStorage().store(ActiveSink::Custom, std::memory_order_release);
-                }
-                if (bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Default) {
-                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Custom, std::memory_order_release);
-                }
-                asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Custom, std::memory_order_release);
-            } else {
-                if (activeSinkStorage().load(std::memory_order_acquire) == ActiveSink::Custom) {
-                    activeSinkStorage().store(ActiveSink::Default, std::memory_order_release);
-                }
-                if (bufferedSinkTargetModeStorage().load(std::memory_order_acquire) == BufferedSinkTargetMode::Custom) {
-                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default, std::memory_order_release);
-                }
-                asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Default, std::memory_order_release);
-            }
-
-            if (asyncModeActive) {
-                ensureAsyncSinkRunning();
-            }
-        }
-
-        // Test-only: allow buffered sink to flush to a custom target (e.g., in-memory sink).
-        static inline void setBufferedSinkTargetForTests(
-            std::function<void(const char*, std::size_t)> writeFn = {}
-        ) {
-            std::lock_guard sinkStateLock(sinkConfigMutex());
-            flushAllThreadBuffers();
-            asyncSinkFlush();
-            shutdownAsyncSink();
-            bufferedTestSinkWriteStorage() = std::move(writeFn);
-            bufferedSinkTargetModeStorage().store(
-                bufferedTestSinkWriteStorage() ? BufferedSinkTargetMode::TestCustom : BufferedSinkTargetMode::Default,
-                std::memory_order_release
-            );
-        }
-
-        inline void startStandardTimer(detail::LabelData labelData) noexcept {
-            if (!assignLabel(std::move(labelData))) {
-                disabled_ = true;
-                return;
-            }
-            threadNum_ = getThreadIdNumber();
-            startSteady_ = std::chrono::steady_clock::now();
-            if (includeWallTime()) {
-                startWall_ = std::chrono::system_clock::now();
-                startWallFormattedLen_ = static_cast<std::uint8_t>(formatTime(
-                    startWall_,
-                    startWallFormatted_,
-                    sizeof(startWallFormatted_)
-                ));
-            }
-        }
-
-        inline bool assignWhere(std::string_view source) noexcept {
-            if (source.empty()) {
-                whereHeapStorage_.clear();
-                where_ = {};
-                return true;
-            }
-            try {
-                whereHeapStorage_.assign(source.data(), source.size());
-            } catch (...) {
-                // Instrumentation must not terminate the host process if an
-                // owned diagnostic string cannot be allocated.
-                whereHeapStorage_.clear();
-                where_ = {};
-                return false;
-            }
-            where_ = whereHeapStorage_;
-            return true;
-        }
-
+    // Both timer variants own labels with the same lifetime and truncation rules.
+    class LabelStorage {
+    protected:
+        friend class ::xyzzy::scopetimer::ScopeTimer_TestFriend;
         inline bool assignLabel(detail::LabelData data) noexcept {
             const std::string_view source = !data.storage.empty() ? std::string_view{data.storage} : data.view;
             if (source.empty()) {
@@ -2113,212 +2180,283 @@ namespace xyzzy::scopetimer {
             return true;
         }
 
-        std::string_view where_; ///< Description of the scope being timed.
-        std::string whereHeapStorage_;
         std::string_view label_{ "ScopeTimer" }; ///< Label for the log output.
         std::array<char, 128> labelBuffer_{};
         std::string labelHeapStorage_;
-        uint32_t threadNum_{0}; ///< Unique thread ID number.
+    };
+    } // namespace detail
 
-        static inline thread_local FormatBuffers tlsFormatBuffers_{};
-        static inline thread_local LineBuffer tlsLineBuffer_{};
+    /**
+     * @brief A high-resolution scope timer for measuring execution time of code blocks.
+     *
+     * This class uses C++20 features such as std::string_view for lightweight string parameters,
+     * thread_local storage and std::atomic for lock-free thread ID assignment,
+     * and fixed-size stack buffers for efficient formatting without heap allocation.
+     * It logs timing information to a configurable sink with buffered options for
+     * high throughput.
+     */
+    class ScopeTimer : public detail::SinkRuntime, private detail::TimerFormatting, private detail::LabelStorage {
+    public:
+        struct HotPathTag {};
 
-        static inline int openLogFileForAppend(const std::string& path) noexcept {
-#if defined(_WIN32)
-            const HANDLE handle = ::CreateFileA(
-                path.c_str(),
-                FILE_APPEND_DATA,
-                FILE_SHARE_READ,
-                nullptr,
-                OPEN_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                nullptr
-            );
-            if (handle == INVALID_HANDLE_VALUE) {
-                return -1;
+        /**
+         * @brief Constructs a ScopeTimer instance and records the start time.
+         *
+         * @param where A std::string_view describing the scope or function being timed.
+         * @param labelData A helper struct conveying the label string and any owned storage.
+         */
+        inline explicit ScopeTimer(std::string_view where, detail::LabelData labelData = detail::LabelData{}) noexcept {
+            if(isDisabled()) {
+                disabled_ = true;
+                return;
             }
-            BY_HANDLE_FILE_INFORMATION status{};
-            if (::GetFileInformationByHandle(handle, &status) == 0
-                || (status.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U) {
-                (void)::CloseHandle(handle);
-                return -1;
+
+            if (!assignWhere(where)) {
+                droppedRecords_.fetch_add(1U, std::memory_order_relaxed);
+                disabled_ = true;
+                return;
             }
-
-            int openFlags = _O_WRONLY | _O_APPEND;
-#ifdef _O_BINARY
-            openFlags |= _O_BINARY;
-#endif
-#ifdef _O_NOINHERIT
-            openFlags |= _O_NOINHERIT;
-#endif
-            const int fd = ::_open_osfhandle(
-                reinterpret_cast<intptr_t>(handle),
-                openFlags
-            );
-            if (fd < 0) {
-                (void)::CloseHandle(handle);
-            }
-            return fd;
-#else
-            int openFlags = O_CREAT | O_WRONLY | O_APPEND;
-#ifdef O_CLOEXEC
-            openFlags |= O_CLOEXEC;
-#endif
-#ifdef O_NOFOLLOW
-            openFlags |= O_NOFOLLOW;
-#else
-            // A predictable filename under /tmp must not fall back to an
-            // implementation that follows attacker-controlled symlinks.
-            return -1;
-#endif
-            const int fd = ::open(path.c_str(), openFlags, 0600);
-            if (fd < 0) {
-                return -1;
-            }
-            struct stat status {};
-            if (::fstat(fd, &status) != 0
-                || !S_ISREG(status.st_mode)
-                || status.st_uid != ::geteuid()
-                || status.st_nlink != 1
-                || ::fchmod(fd, 0600) != 0) {
-                (void)::close(fd);
-                return -1;
-            }
-#ifndef O_CLOEXEC
-            (void)::fcntl(fd, F_SETFD, FD_CLOEXEC);
-#endif
-            return fd;
-#endif
-        }
-
-        static inline void closeFd(int fd) noexcept {
-#if defined(_WIN32)
-            (void)::_close(fd);
-#else
-            (void)::close(fd);
-#endif
-        }
-
-        static inline void writeFdBestEffort(int fd, const char* data, std::size_t len) noexcept {
-#if defined(_WIN32)
-            const auto maxChunk = static_cast<std::size_t>(std::numeric_limits<unsigned int>::max());
-            const auto chunkLen = static_cast<unsigned int>(std::min(len, maxChunk));
-            const int unused = ::_write(fd, data, chunkLen);
-            (void)unused;
-#else
-            const ssize_t unused = ::write(fd, data, len);
-            (void)unused;
-#endif
-        }
-
-        struct LogOpenState {
-            std::string lastFailedPath;
-            std::chrono::steady_clock::time_point lastFailure{};
-            bool lastAttemptFailed{false};
-        };
-
-        static inline LogOpenState& logOpenState() noexcept {
-            return detail::singletonStorage<detail::LogOpenStateTag, LogOpenState>();
+            startStandardTimer(std::move(labelData));
         }
 
         /**
-         * @brief Opens the default log file descriptor on first use (best-effort).
+         * @brief Internal fast path for compiler-provided function names with static storage.
          */
-        static inline bool ensureLogFdOpen() noexcept {
-            int& fd = logFd();
-            if (fd >= 0) {
-                return true;
+        inline explicit ScopeTimer(
+            detail::BorrowedWhere where,
+            detail::LabelData labelData = detail::LabelData{}
+        ) noexcept {
+            if (isDisabled()) {
+                disabled_ = true;
+                return;
             }
 
-            try {
-                auto& state = logOpenState();
-                const std::string path = logDirectory() + "ScopeTimer.log";
-                const auto now = std::chrono::steady_clock::now();
-                constexpr auto RetryDelay = std::chrono::milliseconds{100};
+            where_ = where.view;
+            startStandardTimer(std::move(labelData));
+        }
 
-                if (state.lastAttemptFailed
-                    && path == state.lastFailedPath
-                    && now - state.lastFailure < RetryDelay) {
+        /**
+         * @brief Convenience overload that accepts a plain string_view label.
+         */
+        inline explicit ScopeTimer(std::string_view where, std::string_view label) noexcept
+            : ScopeTimer(where, detail::LabelData{label}) {}
+
+        template <std::size_t N>
+        inline explicit ScopeTimer(std::string_view where, const char (&label)[N]) noexcept
+            : ScopeTimer(where, detail::LabelData{
+                detail::labelArrayView(label),
+                {},
+                detail::LabelStorageKind::Copy
+            }) {}
+
+        inline explicit ScopeTimer(HotPathTag, detail::LabelData labelData = detail::LabelData{}) noexcept {
+            if (isDisabled()) {
+                disabled_ = true;
+                return;
+            }
+
+            hotPathMode_ = true;
+            if (!assignLabel(std::move(labelData))) {
+                droppedRecords_.fetch_add(1U, std::memory_order_relaxed);
+                disabled_ = true;
+                return;
+            }
+            startSteady_ = std::chrono::steady_clock::now();
+        }
+
+        inline explicit ScopeTimer(HotPathTag, std::string_view label) noexcept
+            : ScopeTimer(HotPathTag{}, detail::LabelData{label}) {}
+
+        template <std::size_t N>
+        inline explicit ScopeTimer(HotPathTag, const char (&label)[N]) noexcept
+            : ScopeTimer(HotPathTag{}, detail::LabelData{
+                detail::labelArrayView(label),
+                {},
+                detail::LabelStorageKind::Copy
+            }) {}
+
+        ScopeTimer(const ScopeTimer&) = delete; ///< Deleted copy constructor for safety.
+        ScopeTimer& operator=(const ScopeTimer&) = delete; ///< Deleted copy assignment operator.
+        ScopeTimer(ScopeTimer&&) = delete; ///< Timers must remain bound to their original scope.
+        ScopeTimer& operator=(ScopeTimer&&) = delete; ///< Timers must remain bound to their original scope.
+
+        /**
+         * @brief Destructor that records the end time, computes elapsed duration,
+         * formats timing information, and writes a log entry.
+         *
+         * Logs include thread ID, scope name, start and end timestamps, and elapsed time.
+         */
+        inline ~ScopeTimer() noexcept {
+            if (disabled_ || !canEmit()) return;
+
+            const auto endSteady = std::chrono::steady_clock::now();
+            const auto elapsedNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endSteady - startSteady_).count();
+
+            auto& fmtBufs = formatBuffers();
+            std::size_t len = 0;
+
+            // Final line buffer reused per thread to avoid repeated stack allocation.
+            auto& lineBuf = lineBuffer();
+            if (hotPathMode_) {
+                fmtBufs.elapsedLen = static_cast<std::uint8_t>(formatElapsedNanos(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf)));
+                len = buildHotPathLogLine(
+                    lineBuf.data,
+                    sizeof(lineBuf.data),
+                    label_,
+                    fmtBufs.elapsedBuf,
+                    fmtBufs.elapsedLen
+                );
+            } else {
+                const bool wallTimeEnabled = includeWallTime();
+                if (wallTimeEnabled) {
+                    const auto endWall = std::chrono::system_clock::now();
+                    fmtBufs.endLen = static_cast<std::uint8_t>(formatTime(endWall, fmtBufs.endBuf, sizeof(fmtBufs.endBuf)));
+                } else {
+                    fmtBufs.endLen = 0;
+                }
+                fmtBufs.elapsedLen = static_cast<std::uint8_t>(formatElapsed(elapsedNs, fmtBufs.elapsedBuf, sizeof(fmtBufs.elapsedBuf)));
+
+                len = buildLogLine(lineBuf.data, sizeof(lineBuf.data), LogLineFields{
+                    label_,
+                    threadNum_,
+                    where_,
+                    std::string_view{startWallFormatted_, startWallFormattedLen_},
+                    std::string_view{fmtBufs.endBuf, fmtBufs.endLen},
+                    std::string_view{fmtBufs.elapsedBuf, fmtBufs.elapsedLen},
+                    wallTimeEnabled
+                });
+            }
+
+            emitLine(lineBuf.data, len);
+        }
+
+        // Label expressions in the macros are evaluated only when enabled.
+        static inline bool enabled() noexcept { return !isDisabled(); }
+
+    private:
+        friend class xyzzy::scopetimer::ScopeTimer_TestFriend; // Allow unit tests to access private members
+
+        /**
+         * @brief Checks if the ScopeTimer is disabled based on the SCOPE_TIMER environment variable.
+         *
+         * Reads the environment variable once and caches the result for subsequent calls.
+         * Returns true if the value is "OFF", "FALSE", "NO", or "0" (case-insensitive).
+         *
+         * @return true if disabled, false otherwise.
+         */
+        static inline bool isDisabled() noexcept {
+            static const bool disabled = []() {
+                const char* env = std::getenv("SCOPE_TIMER");
+
+                if(!env) {
                     return false;
                 }
 
-                if (int newFd = openLogFileForAppend(path); newFd >= 0) {
-                    fd = newFd;
-                    state.lastAttemptFailed = false;
-                    state.lastFailedPath.clear();
-                    registerProcessCleanup();
-                    return true;
-                }
+                const std::string val = normalizeBooleanSetting(env);
 
-                state.lastFailedPath = path;
-                state.lastFailure = now;
-                state.lastAttemptFailed = true;
-                return false;
-            } catch (...) {
-                return false;
-            }
-        }
-
-        /**
-         * @brief Registers the atexit handler that drains active sinks and closes the log descriptor.
-         */
-        static inline void registerProcessCleanup() noexcept {
-            // Function-local static initialization is synchronized by C++11.
-            // This can be reached concurrently through the default sink and a
-            // buffered-sink setup call, so a hand-rolled boolean would race.
-            static const bool registered = []() noexcept {
-                return std::atexit([]() noexcept {
-                    std::lock_guard sinkStateLock(sinkConfigMutex());
-                    processCleanupStartedStorage().store(true, std::memory_order_release);
-                    flushAllThreadBuffers();
-                    asyncSinkFlush();
-                    shutdownAsyncSink();
-                    std::lock_guard outputLock(outMutex());
-                    closeLogFd();
-                    customLogSinkStorage() = nullptr;
-                    customSinkWriteStorage() = {};
-                    customSinkFlushStorage() = {};
-                    bufferedTestSinkWriteStorage() = {};
-                    activeSinkStorage().store(ActiveSink::Default, std::memory_order_release);
-                    bufferedSinkTargetModeStorage().store(BufferedSinkTargetMode::Default, std::memory_order_release);
-                    asyncSinkTargetModeStorage().store(AsyncSinkTargetMode::Default, std::memory_order_release);
-                }) == 0;
+                return val == "OFF" || val == "FALSE" || val == "NO" || val == "0";
             }();
-            (void)registered;
+
+            return disabled;
+        }
+
+        static inline std::string normalizeBooleanSetting(const char* env) {
+            std::string value(env ? env : "");
+            const auto isSpace = [](char c) {
+                return std::isspace(static_cast<unsigned char>(c)) != 0;
+            };
+            const auto first = std::find_if_not(value.begin(), value.end(), isSpace);
+            const auto last = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();
+            if (first >= last) {
+                return {};
+            }
+
+            std::string normalized(first, last);
+            std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            return normalized;
+        }
+
+        static inline bool isTruthySetting(const char* envName, bool defaultValue) noexcept {
+            if (const char* env = std::getenv(envName); env && *env) {
+                const std::string value = normalizeBooleanSetting(env);
+                if (value.empty()) {
+                    return defaultValue;
+                }
+                if (value == "OFF" || value == "FALSE" || value == "NO" || value == "0") {
+                    return false;
+                }
+                return true;
+            }
+            return defaultValue;
+        }
+
+        static inline bool includeWallTime() noexcept {
+            static const bool enabled = isTruthySetting("SCOPE_TIMER_WALLTIME", true);
+            return enabled;
         }
 
         /**
-         * @brief Singleton storage for the log descriptor.
+         * @brief Retrieves a unique thread ID number in a lock-free manner.
+         *
+         * Uses thread_local storage to cache the thread ID, and an atomic counter
+         * to assign unique IDs starting from 1.
+         *
+         * @return uint32_t The unique thread ID number.
          */
-        static inline int logFdStorage_{-1};
-        static inline int& logFd() noexcept {
-            return logFdStorage_;
+        static inline uint32_t getThreadIdNumber() noexcept {
+            thread_local uint32_t tid = 0;
+
+            if(tid == 0) {
+                static std::atomic<uint32_t> next{ 1 };
+                // Only uniqueness matters here; callers do not depend on any cross-thread
+                // ordering relationship with the assigned numeric IDs.
+                tid = next.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            return tid;
         }
 
-        /**
-         * @brief Resets the log descriptor so it will be reopened on demand.
-         */
-        static inline void closeLogFd() noexcept {
-            int& fd = logFd();
-            if (fd >= 0) {
-                closeFd(fd);
-                fd = -1;
+        inline void startStandardTimer(detail::LabelData labelData) noexcept {
+            if (!assignLabel(std::move(labelData))) {
+                droppedRecords_.fetch_add(1U, std::memory_order_relaxed);
+                disabled_ = true;
+                return;
+            }
+            threadNum_ = getThreadIdNumber();
+            startSteady_ = std::chrono::steady_clock::now();
+            if (includeWallTime()) {
+                startWall_ = std::chrono::system_clock::now();
+                startWallFormattedLen_ = static_cast<std::uint8_t>(formatTime(
+                    startWall_,
+                    startWallFormatted_,
+                    sizeof(startWallFormatted_)
+                ));
             }
         }
 
-        /**
-         * @brief Test-only accessor to observe the current log descriptor.
-         */
-        static inline int defaultLogFdForTests() noexcept {
-            return logFd();
+        inline bool assignWhere(std::string_view source) noexcept {
+            if (source.empty()) {
+                whereHeapStorage_.clear();
+                where_ = {};
+                return true;
+            }
+            try {
+                whereHeapStorage_.assign(source.data(), source.size());
+            } catch (...) {
+                // Instrumentation must not terminate the host process if an
+                // owned diagnostic string cannot be allocated.
+                whereHeapStorage_.clear();
+                where_ = {};
+                return false;
+            }
+            where_ = whereHeapStorage_;
+            return true;
         }
 
-        /**
-         * @brief Test-only helper that forces the log descriptor closed.
-         */
-        static inline void closeLogFdForTests() noexcept {
-            closeLogFd();
-        }
+        std::string_view where_; ///< Description of the scope being timed.
+        std::string whereHeapStorage_;
+        uint32_t threadNum_{0}; ///< Unique thread ID number.
 
         static inline bool labelUsesLocalBufferForTests(const ScopeTimer& timer) noexcept {
             const char* ptr = timer.label_.data();
@@ -2373,14 +2511,46 @@ namespace xyzzy::scopetimer {
     };
 
     namespace detail {
+        // Compact timer used by the hot-path macro. The public HotPathTag
+        // constructor remains available for source compatibility.
+        class HotPathTimer : private SinkRuntime, private TimerFormatting, private LabelStorage {
+        public:
+            explicit HotPathTimer(ScopeTimer::HotPathTag, LabelData label) noexcept {
+                if (!ScopeTimer::enabled()) return;
+                if (!assignLabel(std::move(label))) {
+                    droppedRecords_.fetch_add(1U, std::memory_order_relaxed);
+                    return;
+                }
+                active_ = true;
+                started_ = std::chrono::steady_clock::now();
+            }
+            ~HotPathTimer() noexcept {
+                if (!active_ || !canEmit()) return;
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started_).count();
+                auto& buffers = formatBuffers();
+                const auto elapsedLen = formatElapsedNanos(elapsed, buffers.elapsedBuf, sizeof(buffers.elapsedBuf));
+                auto& line = lineBuffer();
+                emitLine(line.data, buildHotPathLogLine(line.data, sizeof(line.data), label_, buffers.elapsedBuf, elapsedLen));
+            }
+            HotPathTimer(const HotPathTimer&) = delete;
+            HotPathTimer& operator=(const HotPathTimer&) = delete;
+            HotPathTimer(HotPathTimer&&) = delete;
+            HotPathTimer& operator=(HotPathTimer&&) = delete;
+        private:
+            std::chrono::steady_clock::time_point started_{};
+            bool active_{false};
+        };
+
+        template <typename Timer = ScopeTimer>
         class ConditionalScopeTimer {
         public:
-            template <typename Where, typename LabelFactory>
-            ConditionalScopeTimer(bool enabled, Where&& where, LabelFactory&& labelFactory) noexcept {
-                if (enabled) {
-                    timer_.emplace(std::forward<Where>(where), labelFactory());
-                } else {
-                    (void)where;
+            template <typename Factory>
+            ConditionalScopeTimer(bool condition, Factory&& construct) {
+                if (condition && ScopeTimer::enabled()) {
+                    // Construction happens within the factory's full expression,
+                    // before temporary-backed label pointers/views expire.
+                    construct(timer_);
                 }
             }
 
@@ -2391,7 +2561,7 @@ namespace xyzzy::scopetimer {
             ConditionalScopeTimer& operator=(ConditionalScopeTimer&&) = delete;
 
         private:
-            std::optional<ScopeTimer> timer_;
+            std::optional<Timer> timer_;
         };
     } // namespace detail
 
@@ -2420,11 +2590,19 @@ namespace xyzzy::scopetimer {
 #endif
 
 
+#define ST_TIMER_IMPL(TimerType, condition, where, id, ...)                                 \
+    ::xyzzy::scopetimer::detail::ConditionalScopeTimer<TimerType>                            \
+        ST_CAT(scopeTimerInstance_, id)(                                                   \
+            (condition), [&, ST_CAT(scopeTimerWhere_, id) = (where)](                       \
+                auto& ST_CAT(scopeTimerStorage_, id)) {                                    \
+                ST_CAT(scopeTimerStorage_, id).emplace(ST_CAT(scopeTimerWhere_, id),        \
+                    ::xyzzy::scopetimer::detail::makeLabelData(__VA_ARGS__));               \
+            })
+
 #ifndef SCOPE_TIMER
-#define SCOPE_TIMER(...)                                                             \
-    ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerInstance__, ST_UNIQ)( \
-        ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION),              \
-        ::xyzzy::scopetimer::detail::makeLabelData(__VA_OPT__(__VA_ARGS__)))
+#define SCOPE_TIMER(...)                                                                  \
+    ST_TIMER_IMPL(::xyzzy::scopetimer::ScopeTimer, true,                                    \
+        ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION), ST_UNIQ, __VA_ARGS__)
 #endif
 
 /**
@@ -2447,13 +2625,8 @@ namespace xyzzy::scopetimer {
  */
 #ifndef SCOPE_TIMER_IF
 #define SCOPE_TIMER_IF(cond, ...)                                                          \
-    ::xyzzy::scopetimer::detail::ConditionalScopeTimer                                       \
-        ST_CAT(scopeTimerConditional__, ST_UNIQ)(                                          \
-            (cond),                                                                         \
-            ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION),                 \
-            [&]() noexcept {                                                                 \
-            return ::xyzzy::scopetimer::detail::makeLabelData(__VA_OPT__(__VA_ARGS__));      \
-        })
+    ST_TIMER_IMPL(::xyzzy::scopetimer::ScopeTimer, (cond),                                  \
+        ::xyzzy::scopetimer::detail::makeBorrowedWhere(SCOPE_FUNCTION), ST_UNIQ, __VA_ARGS__)
 #endif
 
 #ifndef SCOPE_TIMER_ENABLE_THREAD_BUFFERED_SINK
@@ -2477,10 +2650,9 @@ namespace xyzzy::scopetimer {
 #endif
 
 #ifndef SCOPE_TIMER_HOT_PATH
-#define SCOPE_TIMER_HOT_PATH(...)                                                            \
-    ::xyzzy::scopetimer::ScopeTimer ST_CAT(scopeTimerHotPathInstance__, ST_UNIQ)(            \
-        ::xyzzy::scopetimer::ScopeTimer::HotPathTag{},                                       \
-        ::xyzzy::scopetimer::detail::makeLabelData(__VA_OPT__(__VA_ARGS__)))
+#define SCOPE_TIMER_HOT_PATH(...)                                                           \
+    ST_TIMER_IMPL(::xyzzy::scopetimer::detail::HotPathTimer, true,                           \
+        ::xyzzy::scopetimer::ScopeTimer::HotPathTag{}, ST_UNIQ, __VA_ARGS__)
 #endif
 
 #else // Release build -> no-op
@@ -2523,6 +2695,9 @@ namespace xyzzy::scopetimer {
         static inline void disableAsyncSink() noexcept {}
         static inline void setLogSink(LogSink&) {}
         static inline void resetLogSink() {}
+        static inline bool enabled() noexcept { return false; }
+        static inline void flush() noexcept {}
+        static inline std::uint64_t droppedRecords() noexcept { return 0U; }
     };
 
 #ifndef SCOPE_TIMER
@@ -2567,7 +2742,7 @@ namespace xyzzy::scopetimer {
 } // namespace xyzzy::scopetimer
 
 #ifndef NDEBUG
-inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, std::size_t len) noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::defaultSinkWrite(const char* data, std::size_t len) noexcept {
     // Fast path: nothing to write.
     if (len == 0) {
         return;
@@ -2577,20 +2752,21 @@ inline void xyzzy::scopetimer::ScopeTimer::defaultSinkWrite(const char* data, st
     if (fd < 0) {
         // Attempt to open/create the log file lazily; if that fails we silently drop the line.
         if (!ensureLogFdOpen()) {
+            recordDroppedPayload(data, len);
             return;
         }
         fd = logFd();
         if (fd < 0) {
+            recordDroppedPayload(data, len);
             return;
         }
     }
 
-    // File writes can legitimately write fewer bytes than requested. ScopeTimer logging is
-    // best-effort, so we intentionally ignore the return code from the platform helper.
+    // Retry interrupted/partial writes and count any undeliverable tail.
     writeFdBestEffort(fd, data, len);
 }
 
-inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::defaultSinkFlush() noexcept {
     // Default sink writes use unbuffered file descriptors, so periodic flush
     // has no userspace buffer to drain. Avoid forcing disk durability on the
     // timer hot path.
@@ -2600,24 +2776,26 @@ inline void xyzzy::scopetimer::ScopeTimer::defaultSinkFlush() noexcept {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
 #endif
-inline void xyzzy::scopetimer::ScopeTimer::noopSinkFlush() noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::noopSinkFlush() noexcept {
     // Intentionally blank: used when tests inject a sink but do not need flush semantics.
 }
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
 
-inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite(const char* data, std::size_t len) noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::threadBufferedSinkWrite(const char* data, std::size_t len) noexcept {
     if (len == 0) {
         return;
     }
 
     auto* buffer = threadLocalBuffer();
     if (buffer == nullptr) {
+        recordDroppedPayload(data, len);
         return;
     }
     const std::size_t flushBytes = threadBufferFlushBytes();
     if (!ensureThreadBufferCapacity(*buffer, flushBytes)) {
+        recordDroppedPayload(data, len);
         return;
     }
 
@@ -2629,6 +2807,10 @@ inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite(const char* d
 
     if (buffer->size + len > flushBytes) {
         flushThreadBuffer(*buffer);
+        if (!ensureThreadBufferCapacity(*buffer, flushBytes)) {
+            recordDroppedPayload(data, len);
+            return;
+        }
     }
 
     std::memcpy(buffer->data.data() + buffer->size, data, len);
@@ -2638,13 +2820,13 @@ inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkWrite(const char* d
     }
 }
 
-inline void xyzzy::scopetimer::ScopeTimer::threadBufferedSinkFlush() noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::threadBufferedSinkFlush() noexcept {
     if (auto* buffer = threadLocalBuffer()) {
         flushThreadBuffer(*buffer, BufferedSinkFlushMode::Forced);
     }
 }
 
-inline void xyzzy::scopetimer::ScopeTimer::asyncSinkWrite(const char* data, std::size_t len) noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::asyncSinkWrite(const char* data, std::size_t len) noexcept {
     if (len == 0) {
         return;
     }
@@ -2654,31 +2836,15 @@ inline void xyzzy::scopetimer::ScopeTimer::asyncSinkWrite(const char* data, std:
 
     auto batch = acquireAsyncSinkBatch(len);
     if (!batch) {
+        recordDroppedPayload(data, len);
         return;
     }
     std::memcpy(batch->data.data(), data, len);
 
-    auto& state = asyncSinkState();
-    bool notifyWorker = false;
-    {
-        std::lock_guard lock(state.mutex);
-        if (!state.running || len > MaxAsyncSinkQueuedBytes || state.queuedBytes > MaxAsyncSinkQueuedBytes - len) {
-            return;
-        }
-        notifyWorker = state.queue.empty();
-        try {
-            state.queue.emplace_back(std::move(*batch));
-            state.queuedBytes += len;
-        } catch (...) {
-            return;
-        }
-    }
-    if (notifyWorker) {
-        state.ready.notify_one();
-    }
+    enqueueAsyncSinkBatch(std::move(*batch));
 }
 
-inline void xyzzy::scopetimer::ScopeTimer::asyncSinkFlush() noexcept {
+inline void xyzzy::scopetimer::detail::SinkRuntime::asyncSinkFlush() noexcept {
     if (isAsyncSinkWorkerThread()) {
         return;
     }

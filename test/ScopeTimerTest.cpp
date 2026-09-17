@@ -57,6 +57,7 @@ using namespace std::chrono_literals;
 // We DO NOT modify ScopeTimer.hpp here.
 namespace xyzzy { namespace scopetimer {
 
+static_assert(sizeof(detail::HotPathTimer) < sizeof(ScopeTimer));
 static_assert(!std::is_copy_constructible_v<ScopeTimer>);
 static_assert(!std::is_copy_assignable_v<ScopeTimer>);
 static_assert(!std::is_move_constructible_v<ScopeTimer>);
@@ -82,6 +83,12 @@ public:
         test_simple_scope();
         test_nested_scopes();
         test_conditional_timer();
+        test_temporary_and_array_labels();
+        test_late_thread_local_logging();
+        test_async_large_threshold_delivery();
+        test_public_flush_and_drop_counts();
+        test_async_transfers_buffer_ownership();
+        test_default_sink_rejects_fifo();
         test_conditional_timer_spans_scope();
         test_parse_elapsed_millis_invalid_inputs();
         test_read_elapsed_millis_missing_file();
@@ -385,6 +392,136 @@ private:
             busyFor(20us);
         }
         expect(true, "nested scopes executed");
+    }
+
+    static void test_temporary_and_array_labels() {
+        sinkCaptureBuffer().clear();
+        ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+        { SCOPE_TIMER_IF(true, std::string(200, 'x').c_str()); }
+        { SCOPE_TIMER_IF(true, std::string_view(std::string(200, 'y'))); }
+        const char* timer = "user-label-name";
+        { SCOPE_TIMER(timer); SCOPE_TIMER_IF(true, timer); SCOPE_TIMER_HOT_PATH(timer); }
+        char label[64] = "hello";
+        { SCOPE_TIMER(label); }
+        { ScopeTimer timer("array", label); }
+        { SCOPE_TIMER_HOT_PATH(label); }
+        const char unterminated[] = {'a', 'b', 'c'};
+        { SCOPE_TIMER(unterminated); }
+        int evaluated = 0;
+        { SCOPE_TIMER_IF(false, (++evaluated, "unused")); }
+        ScopeTimer::resetLogSink();
+        const auto& output = sinkCaptureBuffer();
+        expect(output.find(std::string(200, 'x')) != std::string::npos,
+               "conditional timer owns temporary c_str label before factory returns");
+        expect(output.find(std::string(200, 'y')) != std::string::npos,
+               "conditional timer owns temporary string_view label before factory returns");
+        expect(output.find('\0') == std::string::npos && output.find("[hello]") != std::string::npos,
+               "array labels stop at the first NUL in macros and constructors");
+        expect(output.find("[abc]") != std::string::npos,
+               "unterminated arrays use their full bounded length");
+        expect(evaluated == 0, "false conditions do not evaluate label expressions");
+    }
+
+    static void test_late_thread_local_logging() {
+        struct AtExit {
+            ~AtExit() { SCOPE_TIMER("late-thread-local"); }
+        };
+        for (const bool async : {false, true}) {
+            sinkCaptureBuffer().clear();
+            ScopeTimer::setLogSinkForTests(&testSinkWrite);
+            if (async) ScopeTimer::enableAsyncSink();
+            else ScopeTimer::enableThreadBufferedSink();
+            const auto before = ScopeTimer::droppedRecords();
+            std::thread([] {
+                thread_local AtExit atExit;
+                (void)atExit;
+                SCOPE_TIMER("before-thread-exit");
+            }).join();
+            ScopeTimer::disableThreadBufferedSink();
+            ScopeTimer::resetLogSink();
+            expect(sinkCaptureBuffer().find("before-thread-exit") != std::string::npos,
+                   "thread teardown flushes buffered records");
+            expect(sinkCaptureBuffer().find("late-thread-local") == std::string::npos,
+                   "late thread-local destructors never reuse a destroyed buffer");
+            expect(ScopeTimer::droppedRecords() == before + 1U,
+                   "late thread-local record is counted as dropped");
+        }
+    }
+
+    static void test_async_large_threshold_delivery() {
+        for (const std::size_t threshold : {16U * 1024U * 1024U, 32U * 1024U * 1024U, 64U * 1024U * 1024U}) {
+            std::size_t received = 0;
+            ScopeTimer::setLogSinkForTests([&received](const char*, std::size_t len) { received += len; });
+            ScopeTimer::enableAsyncSink(threshold);
+            const auto before = ScopeTimer::droppedRecords();
+            // One full queue-budget batch followed by a partial tail. Drain
+            // between them so this tests size handling, not overload policy.
+            const std::string record(511U, 'x');
+            for (int i = 0; i < 33000; ++i) {
+                ScopeTimer::threadBufferedSinkWrite(record.data(), record.size());
+                if (i == 32830) ScopeTimer::flush();
+            }
+            ScopeTimer::disableAsyncSink();
+            ScopeTimer::resetLogSink();
+            expect(received == 33000U * record.size(), "large async thresholds deliver every byte");
+            expect(ScopeTimer::droppedRecords() == before, "large threshold alone does not drop records");
+        }
+    }
+
+    static void test_public_flush_and_drop_counts() {
+        for (const bool async : {false, true}) {
+            sinkCaptureBuffer().clear();
+            ScopeTimer::setLogSinkForTests(&testSinkWrite, &testSinkFlush);
+            if (async) ScopeTimer::enableAsyncSink();
+            else ScopeTimer::enableThreadBufferedSink();
+            { SCOPE_TIMER("explicit-flush"); }
+            ScopeTimer::flush();
+            expect(sinkCaptureBuffer().find("explicit-flush") != std::string::npos,
+                   "public flush delivers sparse buffered and async records");
+            ScopeTimer::disableThreadBufferedSink();
+            ScopeTimer::resetLogSink();
+        }
+        const auto failedWrites = ScopeTimer::droppedRecords();
+        ScopeTimer::writeFdBestEffort(-1, "failed\n", 7U);
+        std::deque<ScopeTimer::AsyncSinkBatch> batches;
+        batches.push_back({{'f', '\n'}, 2U});
+        ScopeTimer::closeLogFdForTests();
+        ScopeTimer::resetLogDirectoryForTests(s_test_log_directory + "/missing");
+        ScopeTimer::defaultSinkWriteBatches(batches);
+        ScopeTimer::defaultSinkWrite("failed-open\n", 12U);
+        ScopeTimer::resetLogDirectoryForTests(s_test_log_directory);
+        expect(ScopeTimer::droppedRecords() == failedWrites + 3U,
+               "file open and write failures count undelivered records");
+        const auto before = ScopeTimer::droppedRecords();
+        // No worker: submission must fail observably, without dereferencing
+        // test-only imaginary oversized payloads.
+        ScopeTimer::asyncSinkWrite("first\nsecond\n", 13U);
+        expect(ScopeTimer::droppedRecords() == before + 2U,
+               "failed async submission counts every dropped record");
+    }
+
+    static void test_async_transfers_buffer_ownership() {
+        const char* expected = nullptr;
+        bool sameStorage = false;
+        ScopeTimer::setLogSinkForTests([&](const char* data, std::size_t len) {
+            sameStorage = data == expected && std::string_view(data, len) == "transferred\n";
+        });
+        ScopeTimer::enableAsyncSink(1024U);
+        ScopeTimer::threadBufferedSinkWrite("transferred\n", 12U);
+        expected = ScopeTimer::threadLocalBuffer()->data.data();
+        ScopeTimer::flush();
+        expect(sameStorage, "async worker receives ownership of the original thread buffer");
+        ScopeTimer::disableAsyncSink();
+        ScopeTimer::resetLogSink();
+    }
+
+    static void test_default_sink_rejects_fifo() {
+        const std::string path = s_test_log_directory + "/blocked.fifo";
+        expect(::mkfifo(path.c_str(), 0600) == 0, "FIFO fixture created");
+        // A regression must fail promptly instead of hanging the test suite.
+        const int rc = run_child_with_env({{"SCOPETIMER_PROBE", "fifo"}, {"SCOPETIMER_FIFO_PATH", path}});
+        expect(rc == 0, "default file open rejects FIFOs without waiting for a reader");
+        ::unlink(path.c_str());
     }
 
     static void test_conditional_timer() {
@@ -1129,7 +1266,7 @@ private:
         SCOPE_TIMER_ENABLE_ASYNC_SINK(std::numeric_limits<std::size_t>::max());
         expect(
             ::xyzzy::scopetimer::ScopeTimer::threadBufferFlushBytes()
-                == ::xyzzy::scopetimer::ScopeTimer::MaxSinkFlushBytes,
+                == ::xyzzy::scopetimer::ScopeTimer::MaxAsyncSinkQueuedBytes,
             "async sink clamps oversized flush thresholds"
         );
         SCOPE_TIMER_DISABLE_ASYNC_SINK();
@@ -1659,9 +1796,8 @@ private:
         {
             ::xyzzy::scopetimer::detail::ConditionalScopeTimer timer(
                 true,
-                "tests:conditional:direct",
-                []() noexcept {
-                    return ::xyzzy::scopetimer::detail::makeLabelData("tests:conditional:direct");
+                [](auto& timer) {
+                    timer.emplace("tests:conditional:direct", "tests:conditional:direct");
                 }
             );
             busyFor(1us);
@@ -1787,6 +1923,20 @@ private:
         const char* probe = ::getenv("SCOPETIMER_PROBE");
         if (!probe) return -1;
         const std::string mode = probe;
+        if (mode == "fifo") {
+            ::alarm(3);
+            const int fd = ScopeTimer::openLogFileForAppend(::getenv("SCOPETIMER_FIFO_PATH"));
+            ::alarm(0);
+            if (fd >= 0) ScopeTimer::closeFd(fd);
+            return fd < 0 ? 0 : 1;
+        }
+        if (mode == "disabled_labels") {
+            int calls = 0;
+            { SCOPE_TIMER((++calls, std::string(200, 'x'))); }
+            { SCOPE_TIMER_IF(true, (++calls, std::string(200, 'x'))); }
+            { SCOPE_TIMER_HOT_PATH((++calls, std::string(200, 'x'))); }
+            return calls == 0 ? 0 : 1;
+        }
         if (mode == "1") {
             SCOPE_TIMER("tests:child:probe");
             busyFor(100us);
@@ -1908,6 +2058,8 @@ private:
     }
 
     static void test_disabled_via_env_child_process() {
+        expect(run_child_with_env({{"SCOPETIMER_PROBE", "disabled_labels"}, {"SCOPE_TIMER", "0"}}) == 0,
+               "runtime-disabled macros do not evaluate labels");
         char templ[] = "/tmp/scopetimerXXXXXX";
         char* tdir = ::mkdtemp(templ);
         std::string tmpdir = tdir ? std::string(tdir) : s_test_log_directory;

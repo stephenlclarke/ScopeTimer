@@ -35,7 +35,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertEqual(parsed["SCOPE_TIMER_BENCH_SINK_BYTES"], "4096")
 
     def test_run_once_removes_ambient_scope_timer_configuration(self) -> None:
-        completed = mock.Mock(returncode=0)
+        completed = mock.Mock(returncode=0, stdout="ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=12000000\n")
         with tempfile.TemporaryDirectory() as tmp_dir:
             with (
                 mock.patch.dict(
@@ -70,6 +70,24 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertNotIn("SCOPE_TIMER_FORMAT", child_env)
         self.assertNotIn("SCOPE_TIMER_BENCH_THREADS", child_env)
         self.assertEqual(child_env["SCOPETIMER_TEST_PRESERVED"], "yes")
+
+    def test_run_once_uses_executable_duration(self) -> None:
+        completed = mock.Mock(returncode=0, stdout="ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=1234567\n")
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            benchmark_demo.subprocess, "run", return_value=completed
+        ):
+            result = benchmark_demo.run_once(Path("Benchmark"), 1, "hotpath-bench", False, Path(temp), {})
+        self.assertEqual(result["seconds"], 0.001234567)
+
+    def test_run_once_rejects_missing_or_invalid_duration(self) -> None:
+        for output in ("", "elapsed_ns=1", "ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=0\n",
+                       "ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=-1\n",
+                       "ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=12\nextra"):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as temp, mock.patch.object(
+                benchmark_demo.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=output)
+            ):
+                with self.assertRaisesRegex(benchmark_demo.BenchmarkInvariantError, "in-process timing"):
+                    benchmark_demo.run_once(Path("Benchmark"), 1, "hotpath-bench", False, Path(temp), {})
 
     def test_parse_extra_env_rejects_harness_owned_keys(self) -> None:
         for item in ("SCOPE_TIMER=0", "scope_timer_dir=/tmp/elsewhere"):
@@ -249,7 +267,7 @@ class BenchmarkProbeTests(unittest.TestCase):
 
 class BenchmarkReportTests(unittest.TestCase):
     ENABLED_PROBE = {
-        "protocol": 1,
+        "protocol": 2,
         "identity": "ScopeTimerBenchmark",
         "instrumentation": "enabled",
     }
@@ -276,6 +294,16 @@ class BenchmarkReportTests(unittest.TestCase):
             }
 
         return run_once
+
+    def test_fingerprint_separates_legacy_timing(self) -> None:
+        context = record_demo_benchmarks.comparison_context({}, {}, {}, [])
+        current = record_demo_benchmarks.comparison_fingerprint(context)
+        legacy = dict(context)
+        legacy.pop("timing_method")
+        legacy["fingerprint_version"] = 1
+        old = record_demo_benchmarks.comparison_fingerprint(legacy)
+        self.assertNotEqual(current["sha256"], old["sha256"])
+        self.assertEqual(context["timing_method"], benchmark_demo.TIMING_METHOD)
 
     def test_build_report_counterbalances_pairs_and_records_order(self) -> None:
         calls: list[bool] = []

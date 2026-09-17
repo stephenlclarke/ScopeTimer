@@ -4,7 +4,7 @@ Benchmark the dedicated ScopeTimer benchmark app with ScopeTimer enabled and dis
 
 The script alternates disabled/enabled runs against the same optimized Benchmark
 binary, writes enabled logs into a temporary directory, and reports the added
-wall-clock cost plus a rough per-record estimate.
+in-process elapsed cost (including sink shutdown) plus a rough per-record estimate.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import statistics
 import subprocess
 import sys
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,10 +29,12 @@ MAX_EXPECTED_RECORDS_PER_RUN = 10_000_000
 HOTPATH_RECORDS_PER_ROUND = 256
 HOTPATH_ROUNDS_PER_ITERATION = 12
 INSTRUMENTATION_PROBE_ARGUMENT = "--instrumentation-status"
-INSTRUMENTATION_PROBE_ENABLED = "ScopeTimerBenchmark protocol=1 instrumentation=enabled"
-INSTRUMENTATION_PROBE_DISABLED = "ScopeTimerBenchmark protocol=1 instrumentation=disabled"
+INSTRUMENTATION_PROBE_ENABLED = "ScopeTimerBenchmark protocol=2 instrumentation=enabled"
+INSTRUMENTATION_PROBE_DISABLED = "ScopeTimerBenchmark protocol=2 instrumentation=disabled"
 INSTRUMENTATION_PROBE_TIMEOUT_SECONDS = 5.0
 BENCHMARK_RUN_TIMEOUT_SECONDS = 60.0
+TIMING_METHOD = "steady-clock-v1"
+TIMING_RESPONSE_RE = re.compile(r"ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=([1-9][0-9]*)\n?\Z")
 RESERVED_ENV_KEYS = frozenset({"SCOPE_TIMER", "SCOPE_TIMER_DIR"})
 PROFILE_ENV_KEYS = frozenset(
     {
@@ -309,7 +310,7 @@ def probe_benchmark_binary(binary: Path) -> dict[str, object]:
             "binary did not return the ScopeTimer Benchmark instrumentation protocol response"
         )
     return {
-        "protocol": 1,
+        "protocol": 2,
         "identity": "ScopeTimerBenchmark",
         "instrumentation": "enabled",
     }
@@ -337,12 +338,12 @@ def run_once(
     env["SCOPE_TIMER_DIR"] = str(log_dir)
     env.update(extra_env)
 
-    start = time.perf_counter()
     try:
         completed = subprocess.run(
             [str(binary), f"--iterations={iterations}", f"--scenario={scenario}"],
             env=env,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            text=True,
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=BENCHMARK_RUN_TIMEOUT_SECONDS,
@@ -354,11 +355,15 @@ def run_once(
         ) from error
     except OSError as error:
         raise BenchmarkInvariantError(f"could not execute benchmark binary: {error}") from error
-    elapsed = time.perf_counter() - start
     if completed.returncode != 0:
         raise BenchmarkInvariantError(
             f"benchmark exited with {completed.returncode} (enabled={enabled})"
         )
+
+    timing = TIMING_RESPONSE_RE.fullmatch(completed.stdout)
+    if timing is None:
+        raise BenchmarkInvariantError("benchmark did not return a valid in-process timing result")
+    elapsed = int(timing.group(1)) / 1_000_000_000.0
 
     log_exists = log_path.exists()
     log_lines = 0
@@ -452,6 +457,7 @@ def build_report(binary: Path, iterations: int, runs: int, scenario: str, extra_
         "runs": runs,
         "env": dict(sorted(extra_env.items())),
         "instrumentation_probe": instrumentation_probe,
+        "timing_method": TIMING_METHOD,
         "pair_orders": pair_orders,
         "run_sequence": run_sequence,
         "disabled_mean_s": statistics.mean(disabled_times),

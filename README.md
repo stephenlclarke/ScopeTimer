@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 -->
+
 # ScopeTimer #
 
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_ScopeTimer&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_ScopeTimer)
@@ -45,7 +47,7 @@ Rewritten from scratch for C++20 and later.
 <p align="center">
   <sub>☕ If you found this project useful, consider buying me a coffee or dropping a comment — it keeps the caffeine and ideas flowing! 😄</sub>
 </p>
-<!-- markdownlint-enable MD033 MD013 -->
+<!-- markdownlint-enable MD033 -->
 
 ---
 
@@ -151,6 +153,8 @@ void foo() {
     // ... work ...
 }
 ```
+
+Labels passed to the macros are evaluated only when runtime timing is enabled (and, for `SCOPE_TIMER_IF`, the condition is true). Temporary strings and temporary-backed `c_str()`/`string_view` expressions are copied while valid. Character arrays end at their first NUL, or at the array bound if unterminated; use an explicit `string_view` when you need an exact byte length.
 
 ## Integrating into a new project ##
 
@@ -273,9 +277,21 @@ void fanOut() {
 
 Use the async sink when the buffered sink still spends too much time flushing on
 the caller thread. Async mode keeps the cheap thread-local buffering path, then
-hands full buffers to a background writer thread. Larger handoff sizes such as
+transfers ownership of completed buffers to a background writer thread and recycles their storage. Larger handoff sizes such as
 `64 * 1024` reduce queue churn when you care more about throughput than
 tail-latency of the final write.
+
+Async thresholds are capped at 16 MiB, matching the pending queue budget; thread-buffered thresholds remain capped at 64 MiB. Zero selects the 16 KiB default. If the queue is full or allocation fails, logging remains best-effort and drops records instead of blocking producers. Buffers, the worker's active batch, and recycled storage are separate from the pending queue budget.
+
+### Flushing and delivery diagnostics ###
+
+After profiled workers have quiesced, call `ScopeTimer::flush()` to publish all thread buffers, wait for queued async writes, and invoke the custom sink flush hook without disabling the mode. This does not force file data to durable storage. There is no periodic flush thread, so sparse buffered records remain pending until a threshold, explicit flush, thread exit, or teardown.
+
+`ScopeTimer::droppedRecords()` returns a cumulative, thread-safe count of records the library could not deliver because of buffer allocation, async queue capacity, file opening/writing, or logging after thread-buffer teardown. Compare snapshots around a profiled phase. Counts use newline-delimited records (an incomplete tail counts as one), so labels containing newlines affect the count. Custom sinks have a `void noexcept` write interface: failures hidden inside their implementations cannot be counted. Deliberately disabled timers, callback reentrancy suppression, and timers destroyed after process cleanup are excluded. Both APIs are no-ops under `NDEBUG`, with a zero drop count.
+
+Thread-local buffer destruction marks the thread as closed before releasing storage. Later instrumented thread-local destructors safely drop their records. Process cleanup is terminal: subsequent timers and sink configuration calls do not restart logging. Join profiled workers before process shutdown. The POSIX file sink opens nonblocking before rejecting non-regular files, including FIFOs, and retries interrupted or partial writes; unrecoverable output is counted as dropped.
+
+The single header separates sink lifecycle and delivery (`detail::SinkRuntime`), formatting (`detail::TimerFormatting`), and label ownership (`detail::LabelStorage`). `SCOPE_TIMER_HOT_PATH` uses a compact internal timer without standard timer wall-clock or function-name storage. Existing `ScopeTimer::HotPathTag` construction remains supported.
 
 ### Plug-in logger sink ###
 
@@ -513,6 +529,8 @@ Elapsed-format examples and the log-summary pipeline now live in
 [TESTS.md](TESTS.md).
 
 ## Benchmarks ##
+
+Benchmarks use the executable's `steady_clock` duration from before runtime setup through completed sink teardown. Python subprocess startup, waiting, and timeout polling are outside the measured interval. Protocol 2 and comparison fingerprint version 2 identify this method; earlier measurements remain in history but are not comparable.
 
 Current benchmark results, profile guidance, and reproducible per-profile
 commands now live in [BENCHMARK.md](BENCHMARK.md).

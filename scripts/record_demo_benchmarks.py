@@ -33,7 +33,7 @@ NOISE_TOLERANCE_PCT = 2.0
 SINK_BYTES_PLACEHOLDER = "{sink_bytes}"
 THREADS_PLACEHOLDER = "{threads}"
 ASYNC_SINK_BYTES = "65536"
-COMPARISON_FINGERPRINT_VERSION = 1
+COMPARISON_FINGERPRINT_VERSION = 2
 MAX_MATRIX_BENCHMARK_EXECUTIONS = 512
 DEFAULT_REPORT_CONFIG: dict[str, Any] = {
     "binary": "./build-review/benchmark-build/Benchmark",
@@ -519,6 +519,7 @@ def comparison_context(
     cmake = toolchain.get("cmake", {})
     return {
         "fingerprint_version": COMPARISON_FINGERPRINT_VERSION,
+        "timing_method": benchmark_demo.TIMING_METHOD,
         "benchmark": {
             "scenario": benchmark_config.get("scenario"),
             "iterations": benchmark_config.get("iterations"),
@@ -1047,6 +1048,8 @@ def render_report(
         "`example/Benchmark.cpp`. `demo_benchmark_matrix` runs the full profile",
         "matrix, appends `benchmarks/demo_benchmark_history.json`, and refreshes",
         "this file with the latest snapshot.",
+        "",
+        "Current runs measure elapsed time inside the executable using `steady_clock`, including sink setup and completed teardown. Subprocess startup and timeout polling are excluded. Timing method `steady-clock-v1` uses protocol 2 and fingerprint version 2; earlier measurements are retained in history but are not comparable.",
     ]
 
     if not entries:
@@ -1102,6 +1105,7 @@ def render_report(
                 f"`sink_bytes={config.get('sink_bytes', 'n/a')}`, "
                 f"`cxx_flags={config.get('cxx_flags', 'n/a')}`"
             ),
+            f"- Timing method: `{config.get('timing_method', 'legacy subprocess wall time')}`",
             f"- Comparison fingerprint: `{fingerprint or 'unavailable'}`",
         ]
     )
@@ -1349,6 +1353,7 @@ def main() -> int:
             "threads": config.threads,
             "sink_bytes": config.sink_bytes,
             "cxx_flags": config.cxx_flags,
+            "timing_method": benchmark_demo.TIMING_METHOD,
         }
         machine = machine_metadata(repo_root)
         toolchain = toolchain_metadata(config.build_dir, config.binary, config.cxx_flags)

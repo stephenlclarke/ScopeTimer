@@ -138,7 +138,7 @@ if(BUILD_TESTING AND TARGET Benchmark)
       run_benchmark_instrumentation_status
       PROPERTIES
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-        PASS_REGULAR_EXPRESSION "^ScopeTimerBenchmark protocol=1 instrumentation=enabled"
+        PASS_REGULAR_EXPRESSION "^ScopeTimerBenchmark protocol=2 instrumentation=enabled"
     )
   endif()
   add_test(NAME run_benchmark_buffered_hotpath COMMAND Benchmark --iterations=1)

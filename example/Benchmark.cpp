@@ -282,9 +282,9 @@ static bool instrumentationStatusRequested(int argc, char** argv) {
 
 static void printInstrumentationStatus() {
 #ifndef NDEBUG
-    std::cout << "ScopeTimerBenchmark protocol=1 instrumentation=enabled\n";
+    std::cout << "ScopeTimerBenchmark protocol=2 instrumentation=enabled\n";
 #else
-    std::cout << "ScopeTimerBenchmark protocol=1 instrumentation=disabled\n";
+    std::cout << "ScopeTimerBenchmark protocol=2 instrumentation=disabled\n";
 #endif
 }
 
@@ -357,21 +357,23 @@ int main(int argc, char** argv) {
     }
 
     try {
-        const BenchmarkRuntimeOptions runtimeOptions = parseRuntimeOptions();
-        BenchSinkScope sinkScope(runtimeOptions);
+        const auto started = std::chrono::steady_clock::now();
         {
-            SCOPE_TIMER("Benchmark::main");
-            const BenchmarkOptions parsedOptions = parseOptions(argc, argv);
-
-            // Preserve the existing benchmark scaling behavior so historical results
-            // remain comparable when the dedicated executable replaces the old
-            // benchmark-only path inside Demo.cpp.
-            for (int i = 0; i < parsedOptions.iterations; ++i) {
-                if (parsedOptions.scenario == BenchmarkScenario::HotPathBench) {
-                    hotPathBenchmark(parsedOptions.iterations, runtimeOptions);
+            const BenchmarkRuntimeOptions runtimeOptions = parseRuntimeOptions();
+            BenchSinkScope sinkScope(runtimeOptions);
+            {
+                SCOPE_TIMER("Benchmark::main");
+                const BenchmarkOptions parsedOptions = parseOptions(argc, argv);
+                for (int i = 0; i < parsedOptions.iterations; ++i) {
+                    if (parsedOptions.scenario == BenchmarkScenario::HotPathBench) {
+                        hotPathBenchmark(parsedOptions.iterations, runtimeOptions);
+                    }
                 }
             }
-        }
+        } // Include sink drain and worker shutdown in the measured duration.
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        std::cout << "ScopeTimerBenchmark timing=steady-clock-v1 elapsed_ns=" << elapsed << '\n';
         return 0;
     } catch (const options::OptionError& error) {
         std::cerr << "Benchmark: " << error.what() << "\nTry 'Benchmark --help' for usage.\n";

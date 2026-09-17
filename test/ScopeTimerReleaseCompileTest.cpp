@@ -41,6 +41,8 @@ int main() {
     ScopeTimer::enableAsyncSink(1024U);
     ScopeTimer::disableAsyncSink();
     ScopeTimer::resetLogSink();
+    ScopeTimer::flush();
+    if (ScopeTimer::enabled() || ScopeTimer::droppedRecords() != 0U) return 1;
 
     ScopeTimer regularTimer("release:where", "release:label");
     ScopeTimer hotPathTimer(ScopeTimer::HotPathTag{}, "release:hot-path");
